@@ -1,0 +1,40 @@
+# Unity project state
+/Library/
+/Temp/
+/Obj/
+/Build/
+/Builds/
+/Logs/
+/UserSettings/
+/MemoryCaptures/
+/Recordings/
+
+# If this package repo is accidentally opened as a Unity project, keep generated
+# project folders out of the package.
+/Assets/
+/Packages/
+/ProjectSettings/
+
+# IDE and generated C# project files
+/.vs/
+/.idea/
+/.vscode/
+*.csproj
+*.sln
+*.user
+*.userprefs
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local package/export artifacts
+*.tgz
+*.unitypackage

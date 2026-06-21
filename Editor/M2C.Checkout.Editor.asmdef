@@ -1,0 +1,14 @@
+{
+  "name": "M2C.Checkout.Editor",
+  "rootNamespace": "M2C.Checkout.Editor",
+  "references": ["M2C.Checkout"],
+  "includePlatforms": ["Editor"],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

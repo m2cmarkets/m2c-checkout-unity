@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  External Dependency Manager for Unity (EDM4U / Play Services Resolver) manifest.
+
+  Declares the AndroidX Browser library that the in-app Chrome Custom Tabs strategy
+  (AndroidCustomTabsBrowser) needs. If your project has EDM4U installed, it resolves
+  this into the Android gradle build automatically, so no manual mainTemplate.gradle
+  edit is required.
+
+  This file is inert in projects without EDM4U. The M2C Android build post-processor
+  also appends the same dependency to the generated unityLibrary/build.gradle when it
+  is not already present. If neither path wires the dependency, the SDK falls back to
+  the external system browser when Custom Tabs aren't available.
+-->
+<dependencies>
+  <androidPackages>
+    <androidPackage spec="androidx.browser:browser:1.8.0" />
+  </androidPackages>
+</dependencies>
