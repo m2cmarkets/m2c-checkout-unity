@@ -10,7 +10,7 @@ namespace M2C.Checkout
     /// iOS in-app browser via <c>ASWebAuthenticationSession</c> (the Plugins/iOS shim).
     /// It presents the checkout in a system-managed in-app browser bound to the
     /// return URL's custom scheme, and reports either the callback URL or an explicit
-    /// user-cancel. This is the frictionless native path and pairs with a custom-scheme
+    /// user-cancel. This is the frictionless mobile path and pairs with a custom-scheme
     /// return (mygame://...). For an https Universal Link return, the browser
     /// factory routes through the external browser because ASWebAuthenticationSession
     /// keys on a custom scheme, not a universal link.

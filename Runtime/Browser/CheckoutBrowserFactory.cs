@@ -25,9 +25,14 @@ namespace M2C.Checkout.Internal
             // external browser outright.
             if (!config.UseExternalBrowser) return new AndroidCustomTabsBrowser();
             return new SystemBrowser(waitForDeepLink: true);
+#elif UNITY_STANDALONE
+            throw new M2CCheckoutException(
+                M2CErrorCode.InvalidRequest,
+                "M2C Checkout does not support standalone desktop player builds yet. Build for iOS, Android, or WebGL, or test in the Unity Editor.");
 #else
-            // Standalone desktop: system browser, no deep-link return; the poll resolves.
-            return new SystemBrowser(waitForDeepLink: false);
+            throw new M2CCheckoutException(
+                M2CErrorCode.InvalidRequest,
+                "M2C Checkout does not support this Unity platform yet. Build for iOS, Android, or WebGL, or test in the Unity Editor.");
 #endif
         }
 

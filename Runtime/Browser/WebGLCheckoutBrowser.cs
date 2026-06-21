@@ -16,6 +16,9 @@ namespace M2C.Checkout
     /// </summary>
     public sealed class WebGLCheckoutBrowser : ICheckoutBrowser
     {
+        private const string PopupBlocked = "__M2C_POPUP_BLOCKED__";
+        private const string PopupClosed = "__M2C_POPUP_CLOSED__";
+
         private delegate void ReturnCallback(string url);
 
         [DllImport("__Internal")]
@@ -40,8 +43,21 @@ namespace M2C.Checkout
             var tcs = _pending;
             _pending = null;
             if (tcs == null) return;
+            if (url == PopupBlocked)
+            {
+                tcs.TrySetException(new M2CCheckoutException(M2CErrorCode.InvalidRequest, "checkout popup was blocked; allow popups for this site and try again"));
+                return;
+            }
+            if (url == PopupClosed)
+            {
+                // A return page can close without postMessage reaching the opener
+                // when the browser severs opener across origins. Reconcile with
+                // status instead of turning a completed payment into a cancel.
+                tcs.TrySetResult(BrowserOutcome.Launched);
+                return;
+            }
             if (string.IsNullOrEmpty(url))
-                tcs.TrySetResult(BrowserOutcome.Dismissed); // popup closed without a return message
+                tcs.TrySetResult(BrowserOutcome.Launched);
             else
                 tcs.TrySetResult(BrowserOutcome.Returned(url));
         }

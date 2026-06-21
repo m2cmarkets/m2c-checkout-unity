@@ -74,7 +74,7 @@ namespace M2C.Checkout
             try
             {
                 if (string.IsNullOrEmpty(_config.PublishableKey))
-                    throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "client-initiated checkout requires a publishable key");
+                    throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, MissingPublishableKeyMessage());
                 ValidateStatusSource();
 
                 ApplyClientInitiatedDefaults(ref request);
@@ -217,7 +217,7 @@ namespace M2C.Checkout
         {
             ICheckoutBrowser browser = CheckoutBrowserFactory.Create(_config, returnUrl);
             if (browser.RequiresReturnUrl && string.IsNullOrEmpty(returnUrl))
-                throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "return url is required for this platform; set M2CConfig.ReturnUrl or AuctionRequest.SuccessUrl");
+                throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, MissingReturnUrlMessage());
             return browser;
         }
 
@@ -380,7 +380,17 @@ namespace M2C.Checkout
         {
             if (_inFlight)
                 throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "a checkout is already in progress");
+            EnsureRuntimePlatformSupported();
             _inFlight = true;
+        }
+
+        private static void EnsureRuntimePlatformSupported()
+        {
+#if UNITY_STANDALONE && !UNITY_EDITOR
+            throw new M2CCheckoutException(
+                M2CErrorCode.InvalidRequest,
+                "M2C Checkout does not support standalone desktop player builds yet. Build for iOS, Android, or WebGL, or test in the Unity Editor.");
+#endif
         }
 
         private void ValidateSession(CheckoutSession session)
@@ -401,7 +411,34 @@ namespace M2C.Checkout
             if (src.Kind == StatusSourceKind.Subscribe)
                 throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "subscribe status source is not implemented in v1");
             if (src.Kind == StatusSourceKind.M2C && string.IsNullOrEmpty(_config.PublishableKey))
-                throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "the m2c status source requires a publishable key; use Url or Callback for backend-initiated checkout");
+                throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, MissingStatusPublishableKeyMessage());
+        }
+
+        private static string MissingPublishableKeyMessage()
+        {
+#if UNITY_WEBGL && !UNITY_EDITOR
+            return "client-initiated WebGL checkout requires a web publishable key; set WebGL Publishable Key in the M2C settings asset or M2CConfig.PublishableKey";
+#else
+            return "client-initiated checkout requires a publishable key";
+#endif
+        }
+
+        private static string MissingStatusPublishableKeyMessage()
+        {
+#if UNITY_WEBGL && !UNITY_EDITOR
+            return "the m2c status source requires a web publishable key on WebGL; set WebGL Publishable Key, or use Url or Callback for backend-initiated checkout";
+#else
+            return "the m2c status source requires a publishable key; use Url or Callback for backend-initiated checkout";
+#endif
+        }
+
+        private static string MissingReturnUrlMessage()
+        {
+#if UNITY_WEBGL && !UNITY_EDITOR
+            return "return url is required for WebGL; set WebGL Success URL in the M2C settings asset or AuctionRequest.SuccessUrl";
+#else
+            return "return url is required for this platform; set M2CConfig.ReturnUrl or AuctionRequest.SuccessUrl";
+#endif
         }
 
         private StatusSource ResolveResumeStatusSource(ResumeRecord record)

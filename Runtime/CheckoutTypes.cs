@@ -122,7 +122,7 @@ namespace M2C.Checkout
         public double TransactionValue;
         public string Currency;       // ISO 4217; defaults to USD server-side when null/empty
         public string Description;
-        public string SuccessUrl;     // custom scheme (registered) or https universal/app link
+        public string SuccessUrl;     // mobile custom scheme/app link, or http(s) return page on WebGL
         public string CancelUrl;
         public string Reference;      // your order id; echoed back in the webhook
         public string[] Segments;

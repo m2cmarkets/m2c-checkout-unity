@@ -138,16 +138,27 @@ namespace M2C.Checkout
             return settings != null ? settings.ToConfig() : new M2CConfig();
         }
 
+        /// <summary>
+        /// Build config from the project settings asset for a specific platform.
+        /// Useful for tooling and tests that need to inspect WebGL/mobile defaults
+        /// from inside the Editor.
+        /// </summary>
+        public static M2CConfig FromProjectSettings(M2CCheckoutPlatform platform)
+        {
+            var settings = M2CCheckoutSettings.Load();
+            return settings != null ? settings.ToConfig(platform) : new M2CConfig();
+        }
+
         /// <summary>Publishable key (<c>pub_</c>/<c>pub_test_</c>). Client-initiated mode only.</summary>
         public string PublishableKey;
 
         /// <summary>Where conversion status is read from. Defaults to <see cref="StatusSource.M2C"/>.</summary>
         public StatusSource StatusSource = StatusSource.M2C;
 
-        /// <summary>The success return URL (custom scheme or https universal/app link) registered with the app.</summary>
+        /// <summary>The success return URL. Mobile builds use a custom scheme or https universal/app link; WebGL uses an http(s) return page.</summary>
         public string ReturnUrl;
 
-        /// <summary>The cancel return URL. May equal a distinct cancel deep link.</summary>
+        /// <summary>The cancel return URL. May be a distinct mobile deep link or WebGL return page.</summary>
         public string CancelUrl;
 
         /// <summary>Poll schedule after the return. Defaults to <see cref="PollSchedule.Default"/>.</summary>

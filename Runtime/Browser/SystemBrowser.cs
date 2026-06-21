@@ -9,9 +9,7 @@ namespace M2C.Checkout
     /// Launches the checkout in the system browser via <c>Application.OpenURL</c> and
     /// resolves when the vendor redirects back to a registered deep link, surfaced by
     /// <c>Application.deepLinkActivated</c>. Used for Android and the iOS external-
-    /// browser fallback. On desktop/standalone (no deep-link return) construct with
-    /// <paramref name="waitForDeepLink"/> = false: it resolves immediately and the
-    /// status poll, not a return URL, decides the outcome.
+    /// browser fallback.
     ///
     /// Note: a customer who kills the external browser without completing produces no
     /// redirect, so a true "dismissed" is not detectable here. Per the foundations

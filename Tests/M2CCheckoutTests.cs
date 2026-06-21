@@ -268,6 +268,106 @@ namespace M2C.Checkout.Tests
         }
 
         [Test]
+        public void Builds_webgl_config_from_webgl_settings()
+        {
+            var settings = ScriptableObject.CreateInstance<M2CCheckoutSettings>();
+            try
+            {
+                settings.PublishableKey = " pub_test_mobile ";
+                settings.WebGLPublishableKey = " pub_test_web ";
+                settings.ReturnUrl = " mygame://checkout/return ";
+                settings.CancelUrl = " mygame://checkout/cancel ";
+                settings.WebGLReturnUrl = " https://game.example/m2c-return ";
+                settings.WebGLCancelUrl = " https://game.example/m2c-cancel ";
+
+                M2CConfig config = settings.ToConfig(M2CCheckoutPlatform.WebGL);
+
+                Assert.AreEqual("pub_test_web", config.PublishableKey);
+                Assert.AreEqual("https://game.example/m2c-return", config.ReturnUrl);
+                Assert.AreEqual("https://game.example/m2c-cancel", config.CancelUrl);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(settings);
+            }
+        }
+
+        [Test]
+        public void Webgl_config_does_not_fall_back_to_mobile_deep_links()
+        {
+            var settings = ScriptableObject.CreateInstance<M2CCheckoutSettings>();
+            try
+            {
+                settings.DeepLinkScheme = "mygame";
+
+                M2CConfig config = settings.ToConfig(M2CCheckoutPlatform.WebGL);
+
+                Assert.IsNull(config.ReturnUrl);
+                Assert.IsNull(config.CancelUrl);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(settings);
+            }
+        }
+
+        [Test]
+        public void Webgl_config_preserves_legacy_http_return_urls()
+        {
+            var settings = ScriptableObject.CreateInstance<M2CCheckoutSettings>();
+            try
+            {
+                settings.ReturnUrl = " https://game.example/return ";
+                settings.CancelUrl = " https://game.example/cancel ";
+
+                M2CConfig config = settings.ToConfig(M2CCheckoutPlatform.WebGL);
+
+                Assert.AreEqual("https://game.example/return", config.ReturnUrl);
+                Assert.AreEqual("https://game.example/cancel", config.CancelUrl);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(settings);
+            }
+        }
+
+        [Test]
+        public void Mobile_platform_key_overrides_fall_back_to_mobile_key()
+        {
+            var settings = ScriptableObject.CreateInstance<M2CCheckoutSettings>();
+            try
+            {
+                settings.PublishableKey = " pub_test_mobile ";
+                settings.IosPublishableKey = " pub_test_ios ";
+
+                Assert.AreEqual("pub_test_ios", settings.ToConfig(M2CCheckoutPlatform.Ios).PublishableKey);
+                Assert.AreEqual("pub_test_mobile", settings.ToConfig(M2CCheckoutPlatform.Android).PublishableKey);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(settings);
+            }
+        }
+
+        [Test]
+        public void Webgl_key_does_not_fall_back_to_mobile_key()
+        {
+            var settings = ScriptableObject.CreateInstance<M2CCheckoutSettings>();
+            try
+            {
+                settings.PublishableKey = " pub_test_mobile ";
+
+                M2CConfig config = settings.ToConfig(M2CCheckoutPlatform.WebGL);
+
+                Assert.IsNull(config.PublishableKey);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(settings);
+            }
+        }
+
+        [Test]
         public void Derives_return_urls_from_deep_link_scheme()
         {
             var settings = ScriptableObject.CreateInstance<M2CCheckoutSettings>();
@@ -287,7 +387,7 @@ namespace M2C.Checkout.Tests
         }
 
         [Test]
-        public void Trims_native_settings_and_ignores_blank_return_overrides()
+        public void Trims_mobile_settings_and_ignores_blank_return_overrides()
         {
             var settings = ScriptableObject.CreateInstance<M2CCheckoutSettings>();
             try

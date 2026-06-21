@@ -3,7 +3,8 @@
 // Opens the vendor checkout in a popup (never a full-page redirect, which would
 // tear down the running WebGL app) and waits for the return page to postMessage
 // back to the opener, then invokes the C# callback with the return URL. If the
-// popup is closed without a message, reports a dismissal (empty url).
+// popup is closed without a message, reports an ambiguous close so C# can
+// reconcile through status polling instead of assuming cancel.
 //
 // The merchant's success_url / cancel_url page must post a message to its opener:
 //   window.opener && window.opener.postMessage({ m2c: 'return', url: location.href }, '*');
@@ -39,12 +40,12 @@ mergeInto(LibraryManager.library, {
     window.addEventListener('message', onMessage);
 
     if (!popup) {
-      finish('');
+      finish('__M2C_POPUP_BLOCKED__');
       return;
     }
 
     pollClosed = setInterval(function () {
-      if (popup && popup.closed) finish('');
+      if (popup && popup.closed) finish('__M2C_POPUP_CLOSED__');
     }, 500);
   }
 });

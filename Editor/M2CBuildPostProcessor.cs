@@ -16,7 +16,7 @@ using UnityEditor.iOS.Xcode;
 namespace M2C.Checkout.Editor
 {
     /// <summary>
-    /// Wires the native return path into the generated platform project so the game
+    /// Wires the mobile return path into the generated platform project so the game
     /// developer just imports the package and builds. iOS: links
     /// AuthenticationServices.framework and registers URL schemes / Associated
     /// Domains. Android: adds the return intent-filter to the generated manifest.

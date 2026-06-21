@@ -13,9 +13,12 @@ using UnityEngine;
 public sealed class CheckoutSample : MonoBehaviour
 {
     [SerializeField] private bool useProjectSettings = true;
-    [SerializeField] private string publishableKey = "pub_test_xxx"; // client-initiated only
-    [SerializeField] private string returnUrl = "mygame://checkout/return";
-    [SerializeField] private string cancelUrl = "mygame://checkout/cancel";
+    [SerializeField] private string mobilePublishableKey = "pub_test_xxx"; // mobile key, client-initiated only
+    [SerializeField] private string webGLPublishableKey = ""; // web/browser key for WebGL
+    [SerializeField] private string mobileReturnUrl = "mygame://checkout/return";
+    [SerializeField] private string mobileCancelUrl = "mygame://checkout/cancel";
+    [SerializeField] private string webGLReturnUrl = "https://game.example/m2c-return.html";
+    [SerializeField] private string webGLCancelUrl = "https://game.example/m2c-cancel.html";
     [SerializeField] private string statusUrlTemplate = ""; // optional: https://shop.example/status/{request_id}
     [SerializeField] private bool useExternalBrowser = false;
     [SerializeField] private float statusPollTimeoutSeconds = 90f;
@@ -35,13 +38,22 @@ public sealed class CheckoutSample : MonoBehaviour
 
         string statusUrl = (statusUrlTemplate ?? string.Empty).Trim();
         double pollTimeout = statusPollTimeoutSeconds > 0f ? statusPollTimeoutSeconds : PollSchedule.Default.TotalWindowSeconds;
+#if UNITY_WEBGL && !UNITY_EDITOR
+        string key = webGLPublishableKey;
+        string successUrl = webGLReturnUrl;
+        string cancelUrl = webGLCancelUrl;
+#else
+        string key = mobilePublishableKey;
+        string successUrl = mobileReturnUrl;
+        string cancelUrl = mobileCancelUrl;
+#endif
         return new M2CConfig
         {
-            PublishableKey = publishableKey,
+            PublishableKey = key,
             // Backend-initiated games should point at their own backend instead:
             //   StatusSource = StatusSource.Url("https://shop.example/status/{request_id}")
             StatusSource = string.IsNullOrEmpty(statusUrl) ? StatusSource.M2C : StatusSource.Url(statusUrl),
-            ReturnUrl = returnUrl,
+            ReturnUrl = successUrl,
             CancelUrl = cancelUrl,
             UseExternalBrowser = useExternalBrowser,
             Poll = new PollSchedule(PollSchedule.Default.RampSeconds, pollTimeout),

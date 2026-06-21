@@ -122,8 +122,13 @@ namespace M2C.Checkout.Editor
     {
         private const string RequestIdToken = "{request_id}";
         private SerializedProperty _publishableKey;
+        private SerializedProperty _webGLPublishableKey;
+        private SerializedProperty _iosPublishableKey;
+        private SerializedProperty _androidPublishableKey;
         private SerializedProperty _returnUrl;
         private SerializedProperty _cancelUrl;
+        private SerializedProperty _webGLReturnUrl;
+        private SerializedProperty _webGLCancelUrl;
         private SerializedProperty _statusUrlTemplate;
         private SerializedProperty _browserMode;
         private SerializedProperty _statusPollTimeoutSeconds;
@@ -134,21 +139,40 @@ namespace M2C.Checkout.Editor
         private static Texture2D _logoLight;
         private static Texture2D _logoDark;
         private static bool _advancedExpanded;
+        private static bool _webGLExpanded;
+        private static bool _mobileKeyOverridesExpanded;
+        private static bool _mobileUrlOverridesExpanded;
+        private static bool _statusUrlExpanded;
         private static GUIStyle _titleStyle;
         private static GUIStyle _subtitleStyle;
         private static GUIStyle _sectionStyle;
+        private static GUIStyle _hintStyle;
 
         private void OnEnable()
         {
             _publishableKey = serializedObject.FindProperty("PublishableKey");
+            _webGLPublishableKey = serializedObject.FindProperty("WebGLPublishableKey");
+            _iosPublishableKey = serializedObject.FindProperty("IosPublishableKey");
+            _androidPublishableKey = serializedObject.FindProperty("AndroidPublishableKey");
             _returnUrl = serializedObject.FindProperty("ReturnUrl");
             _cancelUrl = serializedObject.FindProperty("CancelUrl");
+            _webGLReturnUrl = serializedObject.FindProperty("WebGLReturnUrl");
+            _webGLCancelUrl = serializedObject.FindProperty("WebGLCancelUrl");
             _statusUrlTemplate = serializedObject.FindProperty("StatusUrlTemplate");
             _browserMode = serializedObject.FindProperty("BrowserMode");
             _statusPollTimeoutSeconds = serializedObject.FindProperty("StatusPollTimeoutSeconds");
             _deepLinkScheme = serializedObject.FindProperty("DeepLinkScheme");
             _useAssociatedDomains = serializedObject.FindProperty("UseAssociatedDomains");
             _associatedDomain = serializedObject.FindProperty("AssociatedDomain");
+
+            if (HasAnyText(_webGLPublishableKey, _webGLReturnUrl, _webGLCancelUrl) || IsWebGLBuildTarget())
+                _webGLExpanded = true;
+            if (HasAnyText(_iosPublishableKey, _androidPublishableKey))
+                _mobileKeyOverridesExpanded = true;
+            if (HasAnyText(_returnUrl, _cancelUrl))
+                _mobileUrlOverridesExpanded = true;
+            if (HasText(_statusUrlTemplate))
+                _statusUrlExpanded = true;
         }
 
         public override void OnInspectorGUI()
@@ -158,10 +182,9 @@ namespace M2C.Checkout.Editor
 
             DrawBrandingHeader();
             DrawRuntimeLocation();
-            DrawApiSection();
+            DrawCheckoutKeysSection();
+            DrawMobileReturnSection();
             DrawStatusSection();
-            DrawReturnSection();
-            DrawNativeSection();
             DrawAdvancedSection();
 
             serializedObject.ApplyModifiedProperties();
@@ -203,25 +226,67 @@ namespace M2C.Checkout.Editor
                 EditorGUILayout.HelpBox("The runtime settings path already has an M2CCheckoutSettings asset.", MessageType.Info);
         }
 
-        private void DrawApiSection()
+        private void DrawCheckoutKeysSection()
         {
-            DrawSection("API", "These values are used when code calls M2CConfig.FromProjectSettings() or new M2CCheckoutClient().");
-            DrawProperty(_publishableKey, "Publishable Key", "Client-safe key for client-initiated checkout and M2C status polling. Never put a secret key in Unity.");
+            DrawSection("Checkout Keys", "Start with your mobile publishable key. Platform-specific keys stay hidden until you need them.");
+            DrawProperty(_publishableKey, "Mobile Publishable Key", "Mobile publishable key for iOS and Android. Never put a secret key in Unity.");
+
+            bool hasMobileOverrides = HasAnyText(_iosPublishableKey, _androidPublishableKey);
+            if (DrawOptionalToggle(ref _mobileKeyOverridesExpanded, "Use separate iOS and Android keys", hasMobileOverrides, "Only needed if you create separate mobile publishable keys per platform."))
+            {
+                using (new EditorGUI.IndentLevelScope())
+                {
+                    DrawProperty(_iosPublishableKey, "iOS Publishable Key", "Optional iOS mobile publishable key override.");
+                    DrawProperty(_androidPublishableKey, "Android Publishable Key", "Optional Android mobile publishable key override.");
+                }
+            }
+
+            bool hasWebGLSettings = HasAnyText(_webGLPublishableKey, _webGLReturnUrl, _webGLCancelUrl);
+            if (DrawOptionalToggle(ref _webGLExpanded, "Configure WebGL builds", hasWebGLSettings, "Show browser/WebGL key and return URL fields."))
+            {
+                using (new EditorGUI.IndentLevelScope())
+                {
+                    DrawProperty(_webGLPublishableKey, "WebGL Publishable Key", "Web/browser publishable key for WebGL client-initiated checkout and M2C status polling. Backend-session flows with a custom status URL can leave this blank.");
+
+                    if (string.IsNullOrEmpty(Trim(_webGLPublishableKey)) && string.IsNullOrEmpty(Trim(_statusUrlTemplate)))
+                    {
+                        EditorGUILayout.HelpBox("WebGL client-initiated checkout and M2C status polling need a web/browser publishable key. Mobile keys are not used by WebGL.", MessageType.Warning);
+                    }
+
+                    DrawProperty(_webGLReturnUrl, "WebGL Success URL", "Success page for WebGL. Must be http(s), and its origin must match the game page or be allowed on the web publishable key when using client-initiated checkout.");
+                    DrawProperty(_webGLCancelUrl, "WebGL Cancel URL", "Cancel page for WebGL. Must be http(s), and its origin must match the game page or be allowed on the web publishable key when using client-initiated checkout.");
+
+                    ValidateWebGLUrl(_webGLReturnUrl, "WebGL Success URL");
+                    ValidateWebGLUrl(_webGLCancelUrl, "WebGL Cancel URL");
+
+                    DrawReadOnlyTextIfDifferent("Effective WebGL Success URL", _webGLReturnUrl, EffectiveWebGLUrl(_webGLReturnUrl, _returnUrl));
+                    DrawReadOnlyTextIfDifferent("Effective WebGL Cancel URL", _webGLCancelUrl, EffectiveWebGLUrl(_webGLCancelUrl, _cancelUrl));
+                }
+            }
         }
 
         private void DrawStatusSection()
         {
-            DrawSection("Status", "Leave the status URL blank to poll M2C with the publishable key. Set it to your backend endpoint when you want the client to read webhook-fed fulfillment state.");
-            DrawProperty(_statusUrlTemplate, "Status URL", "Optional URL template. Include {request_id}; the SDK replaces it with the checkout request id.");
+            DrawSection("Fulfillment Status", "By default the SDK polls M2C with the publishable key. Use a custom URL only for backend-fed fulfillment state.");
 
             string statusUrl = Trim(_statusUrlTemplate);
+            bool showStatusUrl = DrawOptionalToggle(ref _statusUrlExpanded, "Use custom status URL", !string.IsNullOrEmpty(statusUrl), "Show the backend status URL template field.");
+            if (showStatusUrl)
+            {
+                using (new EditorGUI.IndentLevelScope())
+                {
+                    DrawProperty(_statusUrlTemplate, "Status URL", "Optional URL template. Include {request_id}; the SDK replaces it with the checkout request id.");
+                }
+            }
+
             if (!string.IsNullOrEmpty(statusUrl) && !statusUrl.Contains(RequestIdToken))
             {
                 EditorGUILayout.HelpBox("Status URL must contain " + RequestIdToken + ".", MessageType.Error);
             }
-            else if (string.IsNullOrEmpty(statusUrl) && string.IsNullOrEmpty(Trim(_publishableKey)))
+            else if (string.IsNullOrEmpty(statusUrl)
+                     && !HasAnyPublishableKey())
             {
-                EditorGUILayout.HelpBox("Blank status URL uses M2C status polling, which requires a publishable key at runtime. Backend-only flows should set a status URL or create a callback in code.", MessageType.Warning);
+                EditorGUILayout.HelpBox("Blank status URL uses M2C status polling, which requires a publishable key for each platform that uses it. Backend-only flows should set a status URL or create a callback in code.", MessageType.Warning);
             }
         }
 
@@ -231,7 +296,6 @@ namespace M2C.Checkout.Editor
             _advancedExpanded = EditorGUILayout.Foldout(_advancedExpanded, "Advanced Settings", true, _sectionStyle);
             if (!_advancedExpanded) return;
 
-            EditorGUILayout.HelpBox("Less common checkout defaults. Per-request auction metadata should stay on AuctionRequest.", MessageType.None);
             DrawProperty(_browserMode, "Browser Mode", "Choose whether checkout prefers the in-app browser or always opens the external system browser.");
             DrawProperty(_statusPollTimeoutSeconds, "Status Poll Timeout", "Total seconds to poll conversion status before resolving PendingTimeout.");
 
@@ -243,26 +307,32 @@ namespace M2C.Checkout.Editor
             }
         }
 
-        private void DrawReturnSection()
+        private void DrawMobileReturnSection()
         {
-            DrawSection("Return URLs", "These defaults are sent with client-initiated checkout and used by native browser return handling.");
-            DrawProperty(_returnUrl, "Success URL", "Explicit success return URL. Leave blank to derive it from the deep link scheme.");
-            DrawProperty(_cancelUrl, "Cancel URL", "Explicit cancel return URL. Leave blank to derive it from the deep link scheme.");
-
-            EditorGUILayout.HelpBox("Runtime URLs show what the SDK will actually send: the explicit URL above, or the Deep Link Scheme-derived URL when the field is blank.", MessageType.None);
-            DrawReadOnlyText("Runtime Success URL", EffectiveUrl(_returnUrl, "checkout/return"));
-            DrawReadOnlyText("Runtime Cancel URL", EffectiveUrl(_cancelUrl, "checkout/cancel"));
-        }
-
-        private void DrawNativeSection()
-        {
-            DrawSection("Native Return Setup", "Build post-processors use these values to register iOS URL schemes, Android intent filters, and optional Universal/App Links.");
+            DrawSection("Mobile Return", "Most games only need a deep link scheme. The success and cancel URLs are derived automatically.");
             DrawProperty(_deepLinkScheme, "Deep Link Scheme", "Scheme only, without ://. Example: mygame for mygame://checkout/return.");
-            DrawProperty(_useAssociatedDomains, "Use Associated Domains", "Also configure HTTPS Universal Links on iOS and App Links on Android.");
 
-            EditorGUI.BeginDisabledGroup(!_useAssociatedDomains.boolValue);
-            DrawProperty(_associatedDomain, "Associated Domain", "Host only. Example: links.mygame.com.");
-            EditorGUI.EndDisabledGroup();
+            bool hasMobileUrlOverrides = HasAnyText(_returnUrl, _cancelUrl);
+            if (DrawOptionalToggle(ref _mobileUrlOverridesExpanded, "Use custom mobile return URLs", hasMobileUrlOverrides, "Only needed when you do not want URLs derived from the deep link scheme."))
+            {
+                using (new EditorGUI.IndentLevelScope())
+                {
+                    DrawProperty(_returnUrl, "Success URL", "Explicit mobile success return URL. Leave blank to derive it from the deep link scheme.");
+                    DrawProperty(_cancelUrl, "Cancel URL", "Explicit mobile cancel return URL. Leave blank to derive it from the deep link scheme.");
+                }
+            }
+
+            DrawReadOnlyTextIfDifferent("Effective Success URL", _returnUrl, EffectiveMobileUrl(_returnUrl, "checkout/return"));
+            DrawReadOnlyTextIfDifferent("Effective Cancel URL", _cancelUrl, EffectiveMobileUrl(_cancelUrl, "checkout/cancel"));
+
+            DrawProperty(_useAssociatedDomains, "Use Universal/App Links", "Also configure HTTPS Universal Links on iOS and App Links on Android.");
+            if (_useAssociatedDomains.boolValue)
+            {
+                using (new EditorGUI.IndentLevelScope())
+                {
+                    DrawProperty(_associatedDomain, "Associated Domain", "Host only. Example: links.mygame.com.");
+                }
+            }
 
             if (string.IsNullOrEmpty(Trim(_deepLinkScheme))
                 && (!_useAssociatedDomains.boolValue || string.IsNullOrEmpty(Trim(_associatedDomain))))
@@ -276,7 +346,15 @@ namespace M2C.Checkout.Editor
             EditorGUILayout.Space(10);
             EditorGUILayout.LabelField(title, _sectionStyle);
             if (!string.IsNullOrEmpty(description))
-                EditorGUILayout.HelpBox(description, MessageType.None);
+                EditorGUILayout.LabelField(description, _hintStyle);
+        }
+
+        private static bool DrawOptionalToggle(ref bool expanded, string label, bool forceExpanded, string tooltip)
+        {
+            bool current = forceExpanded || expanded;
+            bool next = EditorGUILayout.ToggleLeft(new GUIContent(label, tooltip), current);
+            expanded = forceExpanded || next;
+            return expanded;
         }
 
         private static void DrawProperty(SerializedProperty property, string label, string tooltip, bool includeChildren = false)
@@ -287,17 +365,64 @@ namespace M2C.Checkout.Editor
         private static void DrawReadOnlyText(string label, string value)
         {
             EditorGUI.BeginDisabledGroup(true);
-            EditorGUILayout.TextField(label, value);
+            EditorGUILayout.TextField(label, string.IsNullOrEmpty(value) ? "(not set)" : value);
             EditorGUI.EndDisabledGroup();
         }
 
-        private string EffectiveUrl(SerializedProperty explicitUrl, string path)
+        private static void DrawReadOnlyTextIfDifferent(string label, SerializedProperty input, string value)
+        {
+            if (string.IsNullOrEmpty(value)) return;
+            if (string.Equals(Trim(input), value, System.StringComparison.Ordinal)) return;
+            DrawReadOnlyText(label, value);
+        }
+
+        private string EffectiveMobileUrl(SerializedProperty explicitUrl, string path)
         {
             string value = Trim(explicitUrl);
             if (!string.IsNullOrEmpty(value)) return value;
 
             string scheme = Trim(_deepLinkScheme);
             return string.IsNullOrEmpty(scheme) ? string.Empty : scheme + "://" + path;
+        }
+
+        private static string EffectiveWebGLUrl(SerializedProperty webGLUrl, SerializedProperty legacyUrl)
+        {
+            string value = Trim(webGLUrl);
+            if (!string.IsNullOrEmpty(value)) return value;
+
+            value = Trim(legacyUrl);
+            return M2CCheckoutSettings.IsHttpUrl(value) ? value : string.Empty;
+        }
+
+        private static void ValidateWebGLUrl(SerializedProperty property, string label)
+        {
+            string value = Trim(property);
+            if (!string.IsNullOrEmpty(value) && !M2CCheckoutSettings.IsHttpUrl(value))
+                EditorGUILayout.HelpBox(label + " must be an http:// or https:// URL.", MessageType.Error);
+        }
+
+        private static bool HasAnyText(params SerializedProperty[] properties)
+        {
+            for (int i = 0; i < properties.Length; i++)
+            {
+                if (HasText(properties[i])) return true;
+            }
+            return false;
+        }
+
+        private static bool HasText(SerializedProperty property)
+        {
+            return !string.IsNullOrEmpty(Trim(property));
+        }
+
+        private bool HasAnyPublishableKey()
+        {
+            return HasAnyText(_publishableKey, _webGLPublishableKey, _iosPublishableKey, _androidPublishableKey);
+        }
+
+        private static bool IsWebGLBuildTarget()
+        {
+            return EditorUserBuildSettings.activeBuildTarget == BuildTarget.WebGL;
         }
 
         private static string Trim(SerializedProperty property)
@@ -322,6 +447,10 @@ namespace M2C.Checkout.Editor
             {
                 fontSize = 12,
             };
+            _hintStyle = new GUIStyle(EditorStyles.wordWrappedMiniLabel)
+            {
+                padding = new RectOffset(0, 0, 0, 4),
+            };
         }
 
         private static Texture2D LoadLogo()
@@ -341,7 +470,7 @@ namespace M2C.Checkout.Editor
         private static string PackageVersion()
         {
             var info = UnityEditor.PackageManager.PackageInfo.FindForAssembly(typeof(M2CCheckoutSettings).Assembly);
-            return info != null && !string.IsNullOrEmpty(info.version) ? info.version : "0.1.0";
+            return info != null && !string.IsNullOrEmpty(info.version) ? info.version : "0.1.1";
         }
     }
 }
