@@ -20,6 +20,8 @@ namespace M2C.Checkout
         private readonly M2CConfig _config;
         private readonly M2CApi _api;
         private static bool _inFlight;
+        private const double ClosedStatusWindowSeconds = 1.5;
+        private const double ResumedStatusWindowSeconds = 3.0;
 
         /// <summary>Fired on the Unity main thread for every state transition.</summary>
         public event Action<CheckoutState> OnStateChanged;
@@ -71,6 +73,8 @@ namespace M2C.Checkout
         public async Task<CheckoutResult> StartAsync(AuctionRequest request)
         {
             BeginFlow();
+            ICheckoutBrowser browser = null;
+            IDisposable runtimeScope = null;
             try
             {
                 if (string.IsNullOrEmpty(_config.PublishableKey))
@@ -78,19 +82,23 @@ namespace M2C.Checkout
                 ValidateStatusSource();
 
                 ApplyClientInitiatedDefaults(ref request);
-                CreateBrowserForReturnUrl(request.SuccessUrl);
+                browser = CreateBrowserForReturnUrl(request.SuccessUrl);
+                runtimeScope = EnterRuntimeScope(browser);
+                PrepareLaunchIfSupported(browser);
 
                 SetState(CheckoutState.Creating);
                 AuctionResult auction = await _api.CreateAuctionAsync(request);
-                return await RunAsync(auction.CheckoutUrl, auction.RequestId, "client", request.SuccessUrl, request.CancelUrl);
+                return await RunAsync(auction.CheckoutUrl, auction.RequestId, "client", request.SuccessUrl, request.CancelUrl, browser);
             }
             catch
             {
+                CancelPreparedLaunch(browser);
                 if (State != CheckoutState.Error) SetState(CheckoutState.Error);
                 throw;
             }
             finally
             {
+                runtimeScope?.Dispose();
                 _inFlight = false;
             }
         }
@@ -143,7 +151,7 @@ namespace M2C.Checkout
             return ResolveStatusWithinBudgetAsync(requestId, null, M2CApi.DefaultHttpTimeoutSeconds);
         }
 
-        private async Task<CheckoutResult> RunAsync(string checkoutUrl, string requestId, string mode, string returnUrl, string cancelUrl)
+        private async Task<CheckoutResult> RunAsync(string checkoutUrl, string requestId, string mode, string returnUrl, string cancelUrl, ICheckoutBrowser preparedBrowser = null)
         {
             if (string.IsNullOrEmpty(checkoutUrl) || string.IsNullOrEmpty(requestId))
             {
@@ -151,66 +159,85 @@ namespace M2C.Checkout
                 throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "missing checkout url or request id");
             }
 
-            ICheckoutBrowser browser = CreateBrowserForReturnUrl(returnUrl);
+            ICheckoutBrowser browser = preparedBrowser ?? CreateBrowserForReturnUrl(returnUrl);
+            IDisposable runtimeScope = EnterRuntimeScope(browser);
 
-            SetState(CheckoutState.Ready);
-            ResumeStore.Save(requestId, mode, _config.StatusSource);
-            SetState(CheckoutState.Launching);
-            SetState(CheckoutState.AwaitingReturn);
-
-            BrowserOutcome outcome;
             try
             {
-                outcome = await browser.LaunchAsync(checkoutUrl, returnUrl, cancelUrl);
-            }
-            catch (Exception e)
-            {
-                ResumeStore.Clear();
-                SetState(CheckoutState.Error);
-                throw e is M2CCheckoutException ? e : new M2CCheckoutException(M2CErrorCode.Unknown, e.Message);
-            }
+                SetState(CheckoutState.Ready);
+                ResumeStore.Save(requestId, mode, _config.StatusSource);
+                SetState(CheckoutState.Launching);
+                SetState(CheckoutState.AwaitingReturn);
 
-            // Launched: a surface that polls for its outcome over the full window (the
-            // Editor real-checkout mock; backend-session flows).
-            if (outcome.Result == BrowserResult.Launched)
+                BrowserOutcome outcome;
+                try
+                {
+                    outcome = await browser.LaunchAsync(checkoutUrl, returnUrl, cancelUrl);
+                }
+                catch (Exception e)
+                {
+                    ResumeStore.Clear();
+                    SetState(CheckoutState.Error);
+                    throw e is M2CCheckoutException ? e : new M2CCheckoutException(M2CErrorCode.Unknown, e.Message);
+                }
+
+                // Launched: a surface that polls for its outcome over the full window (the
+                // Editor real-checkout mock; backend-session flows).
+                if (outcome.Result == BrowserResult.Launched)
+                    return await PollAsync(requestId);
+
+                // Closed: WebGL can observe a tab/window close, but that close can race
+                // with postMessage delivery. Keep this snappy for true abandons while
+                // still giving already-visible terminal status a chance to win.
+                if (outcome.Result == BrowserResult.Closed)
+                    return await ResolveViaShortStatusPollAsync(requestId, ClosedStatusWindowSeconds);
+
+                // Resumed: a return-capable surface ended with no return URL. A short
+                // status window catches terminal state that did not redirect. It is
+                // never a cancel, because a bare resume can also be 3DS/OTP bounce-back.
+                if (outcome.Result == BrowserResult.Resumed)
+                    return await ResolveViaShortStatusPollAsync(requestId, ResumedStatusWindowSeconds);
+
+                // Canceled: the customer explicitly closed a return-capable surface (iOS
+                // canceledLogin / Auth Tab RESULT_CANCELED). Backend terminal status still
+                // wins if it is already visible; otherwise this is a browser cancel.
+                if (outcome.Result == BrowserResult.Canceled)
+                    return await ResolveBrowserCancelAsync(requestId);
+
+                SetState(CheckoutState.Returned);
+
+                if (outcome.Result == BrowserResult.Dismissed)
+                {
+                    ResumeStore.Clear();
+                    return Terminal(new CheckoutCanceled(requestId), CheckoutState.Canceled);
+                }
+
+                if (ReturnClassifier.HasMismatchedRequestId(outcome.ReturnUrl, requestId))
+                {
+                    ResumeStore.Clear();
+                    SetState(CheckoutState.Error);
+                    throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "return url request_id did not match the active checkout");
+                }
+
+                var verdict = ReturnClassifier.Classify(outcome.ReturnUrl, returnUrl, cancelUrl, requestId, out _);
+                if (verdict == ReturnVerdict.Cancel)
+                {
+                    ResumeStore.Clear();
+                    return Terminal(new CheckoutCanceled(requestId), CheckoutState.Canceled);
+                }
+                if (verdict == ReturnVerdict.Unknown)
+                {
+                    ResumeStore.Clear();
+                    SetState(CheckoutState.Error);
+                    throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "return url did not match the active return or cancel URL");
+                }
+
                 return await PollAsync(requestId);
-
-            // Resumed: the app came back from a Custom Tab with no deep-link outcome. One
-            // status read catches a completion that didn't redirect; anything else resolves
-            // immediately. Fast, and never a cancel - a bare resume can't be told apart from
-            // a 3DS/OTP return, so canceling on it would kill live payments.
-            if (outcome.Result == BrowserResult.Resumed)
-                return await ResolveResumedAsync(requestId);
-
-            SetState(CheckoutState.Returned);
-
-            if (outcome.Result == BrowserResult.Dismissed)
-            {
-                ResumeStore.Clear();
-                return Terminal(new CheckoutCanceled(requestId), CheckoutState.Canceled);
             }
-
-            if (ReturnClassifier.HasMismatchedRequestId(outcome.ReturnUrl, requestId))
+            finally
             {
-                ResumeStore.Clear();
-                SetState(CheckoutState.Error);
-                throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "return url request_id did not match the active checkout");
+                runtimeScope?.Dispose();
             }
-
-            var verdict = ReturnClassifier.Classify(outcome.ReturnUrl, returnUrl, cancelUrl, requestId, out _);
-            if (verdict == ReturnVerdict.Cancel)
-            {
-                ResumeStore.Clear();
-                return Terminal(new CheckoutCanceled(requestId), CheckoutState.Canceled);
-            }
-            if (verdict == ReturnVerdict.Unknown)
-            {
-                ResumeStore.Clear();
-                SetState(CheckoutState.Error);
-                throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "return url did not match the active return or cancel URL");
-            }
-
-            return await PollAsync(requestId);
         }
 
         private ICheckoutBrowser CreateBrowserForReturnUrl(string returnUrl)
@@ -219,6 +246,24 @@ namespace M2C.Checkout
             if (browser.RequiresReturnUrl && string.IsNullOrEmpty(returnUrl))
                 throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, MissingReturnUrlMessage());
             return browser;
+        }
+
+        private static void PrepareLaunchIfSupported(ICheckoutBrowser browser)
+        {
+            var prelauncher = browser as ICheckoutBrowserPrelauncher;
+            if (prelauncher != null) prelauncher.PrepareLaunch();
+        }
+
+        private static void CancelPreparedLaunch(ICheckoutBrowser browser)
+        {
+            var prelauncher = browser as ICheckoutBrowserPrelauncher;
+            if (prelauncher != null) prelauncher.CancelPreparedLaunch();
+        }
+
+        private static IDisposable EnterRuntimeScope(ICheckoutBrowser browser)
+        {
+            var scoped = browser as ICheckoutBrowserRuntimeScope;
+            return scoped != null ? scoped.EnterRuntimeScope() : null;
         }
 
         private void ApplyClientInitiatedDefaults(ref AuctionRequest request)
@@ -295,12 +340,79 @@ namespace M2C.Checkout
             return Terminal(new CheckoutPendingTimeout(requestId), CheckoutState.PendingTimeout);
         }
 
-        // Resolve a foreground resume that produced no deep-link outcome with a single
-        // status read: a completion that didn't redirect resolves Completed; pending or a
-        // retryable status-read failure resolves pending-timeout (the webhook is authoritative).
-        // Never a cancel - a resume is indistinguishable from a 3DS/OTP return. One
-        // round-trip, so a back-out settles in ~a second instead of riding the poll ramp.
-        private async Task<CheckoutResult> ResolveResumedAsync(string requestId)
+        // Resolve a return-less close with a bounded, short poll: terminal backend
+        // status wins without making an ambiguous browser close wait out the full
+        // checkout poll window.
+        private async Task<CheckoutResult> ResolveViaShortStatusPollAsync(string requestId, double maxWindowSeconds)
+        {
+            SetState(CheckoutState.Polling);
+            var sched = _config.Poll ?? PollSchedule.Default;
+            double windowSeconds = Math.Min(maxWindowSeconds, sched.TotalWindowSeconds);
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            int attempt = 0;
+
+            while (stopwatch.Elapsed.TotalSeconds < windowSeconds)
+            {
+                double delay = ReturnlessStatusDelayForAttempt(attempt++);
+                if (delay > 0)
+                {
+                    double remainingBeforeDelay = windowSeconds - stopwatch.Elapsed.TotalSeconds;
+                    if (remainingBeforeDelay <= 0) break;
+                    await M2CScheduler.Instance.Delay(Math.Min(delay, remainingBeforeDelay));
+                    if (delay >= remainingBeforeDelay) break;
+                }
+
+                double remaining = windowSeconds - stopwatch.Elapsed.TotalSeconds;
+                if (remaining <= 0) break;
+
+                ClientStatus status;
+                try
+                {
+                    status = await ResolveStatusWithinBudgetAsync(requestId, null, remaining);
+                }
+                catch (M2CCheckoutException e)
+                {
+                    if (!IsRetryableStatusRead(e))
+                    {
+                        ResumeStore.Clear();
+                        SetState(CheckoutState.Error);
+                        throw;
+                    }
+
+                    Debug.LogWarning("[M2C] status read failed, will retry briefly: " + e.Message);
+                    continue;
+                }
+                catch (Exception e)
+                {
+                    Debug.LogWarning("[M2C] status read failed, will retry briefly: " + e.Message);
+                    continue;
+                }
+
+                CheckoutResult result = ResultFromStatusRead(requestId, status);
+                if (result.Outcome != CheckoutOutcome.PendingTimeout)
+                {
+                    ResumeStore.Clear();
+                    return Terminal(result, StateForResult(result));
+                }
+            }
+
+            ResumeStore.Clear();
+            return Terminal(new CheckoutPendingTimeout(requestId), CheckoutState.PendingTimeout);
+        }
+
+        private static double ReturnlessStatusDelayForAttempt(int attemptIndex)
+        {
+            if (attemptIndex <= 0) return 0.0;
+            if (attemptIndex == 1) return 0.25;
+            return 0.5;
+        }
+
+        private async Task<CheckoutResult> ResolveBrowserCancelAsync(string requestId)
+        {
+            return await ResolveStatusReadWithFallbackAsync(requestId, true);
+        }
+
+        private async Task<CheckoutResult> ResolveStatusReadWithFallbackAsync(string requestId, bool cancelWhenProcessing)
         {
             SetState(CheckoutState.Polling);
             ClientStatus status;
@@ -316,25 +428,56 @@ namespace M2C.Checkout
             }
             catch (M2CCheckoutException e)
             {
-                Debug.LogWarning("[M2C] resume status read failed, treating as pending: " + e.Message);
+                Debug.LogWarning("[M2C] status read failed, treating as " + (cancelWhenProcessing ? "canceled" : "pending") + ": " + e.Message);
                 status = ClientStatus.Processing;
             }
             catch (Exception e)
             {
-                Debug.LogWarning("[M2C] resume status read failed, treating as pending: " + e.Message);
+                Debug.LogWarning("[M2C] status read failed, treating as " + (cancelWhenProcessing ? "canceled" : "pending") + ": " + e.Message);
                 status = ClientStatus.Processing;
             }
             ResumeStore.Clear();
+            CheckoutResult result = cancelWhenProcessing
+                ? ResultFromBrowserCancelStatusRead(requestId, status)
+                : ResultFromStatusRead(requestId, status);
+            return Terminal(result, StateForResult(result));
+        }
+
+        internal static CheckoutResult ResultFromStatusRead(string requestId, ClientStatus status)
+        {
             switch (status)
             {
                 case ClientStatus.Completed:
-                    return Terminal(new CheckoutCompleted(requestId), CheckoutState.Completed);
+                    return new CheckoutCompleted(requestId);
                 case ClientStatus.Failed:
-                    return Terminal(new CheckoutFailed(requestId), CheckoutState.Failed);
+                    return new CheckoutFailed(requestId);
                 case ClientStatus.Canceled:
-                    return Terminal(new CheckoutCanceled(requestId), CheckoutState.Canceled);
+                    return new CheckoutCanceled(requestId);
                 default:
-                    return Terminal(new CheckoutPendingTimeout(requestId), CheckoutState.PendingTimeout);
+                    return new CheckoutPendingTimeout(requestId);
+            }
+        }
+
+        internal static CheckoutResult ResultFromBrowserCancelStatusRead(string requestId, ClientStatus status)
+        {
+            CheckoutResult result = ResultFromStatusRead(requestId, status);
+            return result.Outcome == CheckoutOutcome.PendingTimeout
+                ? new CheckoutCanceled(requestId)
+                : result;
+        }
+
+        private static CheckoutState StateForResult(CheckoutResult result)
+        {
+            switch (result.Outcome)
+            {
+                case CheckoutOutcome.Completed:
+                    return CheckoutState.Completed;
+                case CheckoutOutcome.Failed:
+                    return CheckoutState.Failed;
+                case CheckoutOutcome.Canceled:
+                    return CheckoutState.Canceled;
+                default:
+                    return CheckoutState.PendingTimeout;
             }
         }
 

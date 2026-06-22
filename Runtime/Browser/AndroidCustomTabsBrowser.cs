@@ -14,7 +14,7 @@ namespace M2C.Checkout
     ///
     /// Requires the AndroidX Browser library on the classpath. The package's build
     /// post-processor (M2CBuildPostProcessor) adds
-    /// 'androidx.browser:browser:1.8.0' to the generated Gradle project
+    /// 'androidx.browser:browser:1.9.0' to the generated Gradle project
     /// automatically, so no EDM4U install or manual gradle edit is needed. If the
     /// library is ever missing, this degrades gracefully to the system browser.
     ///
@@ -26,7 +26,7 @@ namespace M2C.Checkout
 
         // Brief head start after the app returns to the foreground to let an in-flight
         // deep-link redirect resolve precisely before we fall back to a status read.
-        // Short, because the resume fallback is itself a quick single status check.
+        // Short, because the resume fallback itself polls only briefly.
         private const double ReturnGraceSeconds = 0.5;
 
         public Task<BrowserOutcome> LaunchAsync(string checkoutUrl, string returnUrl, string cancelUrl)
@@ -54,9 +54,9 @@ namespace M2C.Checkout
 
             // Safety net for when no deep link arrives (scheme unregistered, redirect
             // failed, or the user swiped the tab away): when the app returns to the
-            // foreground without one, resolve as Resumed so the client does a single
-            // status read and then resolves quickly - it never treats a bare app-resume
-            // as a cancel. That distinction matters because real
+            // foreground without one, resolve as Resumed so the client does a
+            // short status reconciliation and then resolves quickly - it never treats
+            // a bare app-resume as a cancel. That distinction matters because real
             // authenticated payments (3-D Secure / OTP, "approve in your bank app")
             // legitimately bounce the user out of the tab and back; canceling on resume
             // would kill live payments. A completed purchase resolves via the status poll
@@ -106,7 +106,7 @@ namespace M2C.Checkout
             {
                 Debug.LogWarning("[M2C] Chrome Custom Tabs unavailable (" + e.Message +
                                  "); falling back to the system browser. The Android build post-processor " +
-                                 "adds 'androidx.browser:browser:1.8.0' automatically; check the generated Gradle project " +
+                                 "adds 'androidx.browser:browser:1.9.0' automatically; check the generated Gradle project " +
                                  "or your dependency resolver if in-app tabs should be available.");
                 return false;
             }

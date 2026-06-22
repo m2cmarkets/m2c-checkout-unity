@@ -19,10 +19,11 @@ truth**. The SDK's status read is advisory UX.
 ## Requirements
 
 - Unity 2021.3 LTS or newer.
-- No manual dependency setup. The only non-C# files are a tiny WebGL `.jslib` and a
-  ~60-line iOS Objective-C shim, both shipped as source; Android uses no Java/Kotlin file.
-  Android Custom Tabs require AndroidX Browser in the generated Gradle build; the
-  package adds it automatically during Android project generation.
+- No manual dependency setup. The only non-C# files are a tiny WebGL `.jslib`, a
+  ~60-line iOS Objective-C shim, and a small Android Auth Tab helper activity,
+  all shipped as source. Android in-app tabs require AndroidX Browser / Activity
+  in the generated Gradle build; the package adds them automatically during
+  Android project generation.
 
 ## Package layout
 
@@ -166,12 +167,13 @@ Register the return so the vendor's redirect reaches the app:
   Associated Domains entitlement and the Android App Link intent-filter; domain-file
   hosting is still yours.
 
-Android in-app browser (Chrome Custom Tabs): the SDK launches the checkout in an
-in-app Custom Tab via JNI, which needs the AndroidX Browser library. The Android
-build post-processor appends `androidx.browser:browser:1.8.0` to the generated
-`unityLibrary/build.gradle` when it is not already present. The package also ships
+Android in-app browser: the SDK prefers Android Auth Tab for custom-scheme
+returns and falls back to Chrome Custom Tabs / the system browser when needed.
+The Android build post-processor appends `androidx.browser:browser:1.9.0`,
+`androidx.activity:activity:1.9.3`, and Kotlin stdlib alignment dependencies to
+the generated Gradle project when they are not already present. The package also ships
 `Editor/M2CCheckoutDependencies.xml`, so projects that use EDM4U can let EDM4U
-manage the same dependency instead.
+manage the same dependencies instead.
 
 If the dependency is removed or the generated Gradle file cannot be updated, the
 SDK falls back to the external system browser automatically
@@ -187,8 +189,33 @@ either match the game page or are also allowed on the key. The merchant
 shim can capture the return:
 
 ```js
-window.opener && window.opener.postMessage({ m2c: 'return', url: location.href }, 'https://your-app-origin');
+const message = { m2c: 'return', url: location.href };
+if (window.opener && !window.opener.closed) {
+  window.opener.postMessage(message, 'https://your-app-origin');
+}
+try {
+  const channel = new BroadcastChannel('m2c_checkout');
+  channel.postMessage(message);
+  channel.close();
+} catch {}
+try {
+  localStorage.setItem('m2c_checkout_return', JSON.stringify(message));
+} catch {}
 ```
+
+If the checkout surface closes before that return message is received, the SDK
+polls status briefly and may return `PendingTimeout`; the webhook-fed backend
+remains the authority.
+
+For client-initiated WebGL, call `StartAsync` directly from the click/tap handler
+that starts checkout. `Auto` and `NewTab` launch checkout after the auction URL is
+ready so the WebGL game tab keeps running while the request is created. `Popup`
+mode pre-opens a blank popup before the async auction request, then navigates it
+to the hosted checkout URL when the auction returns; this can reduce popup
+blocker failures on desktop browsers. `WebGL Launch Mode` is only a browser hint
+(`Auto`, `NewTab`, or `Popup`); desktop and mobile browsers may still choose their
+own tab, popup window, or tab sheet presentation. The return page must preserve
+`window.opener`, so do not use `noopener` on this checkout surface.
 
 For client-initiated local WebGL testing, use a test web publishable key with the
 exact loopback origin Unity serves, such as `http://localhost:8000`. `localhost`,

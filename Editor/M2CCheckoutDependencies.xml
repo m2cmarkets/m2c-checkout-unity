@@ -2,18 +2,23 @@
 <!--
   External Dependency Manager for Unity (EDM4U / Play Services Resolver) manifest.
 
-  Declares the AndroidX Browser library that the in-app Chrome Custom Tabs strategy
-  (AndroidCustomTabsBrowser) needs. If your project has EDM4U installed, it resolves
-  this into the Android gradle build automatically, so no manual mainTemplate.gradle
-  edit is required.
+  Declares the AndroidX Browser / Activity libraries that the in-app Android Auth
+  Tab and Chrome Custom Tabs strategies need, plus a Kotlin stdlib floor so Unity's
+  older kotlin-stdlib-jdk7/jdk8 cannot collide with AndroidX's newer stdlib. If
+  your project has EDM4U installed, it resolves these into the Android gradle build
+  automatically, so no manual mainTemplate.gradle edit is required.
 
   This file is inert in projects without EDM4U. The M2C Android build post-processor
-  also appends the same dependency to the generated unityLibrary/build.gradle when it
-  is not already present. If neither path wires the dependency, the SDK falls back to
-  the external system browser when Custom Tabs aren't available.
+  also appends the same dependencies to the generated unityLibrary/build.gradle when
+  they are not already present. If neither path wires the dependencies, the SDK
+  falls back to the external system browser when in-app tabs aren't available.
 -->
 <dependencies>
   <androidPackages>
-    <androidPackage spec="androidx.browser:browser:1.8.0" />
+    <androidPackage spec="androidx.browser:browser:1.9.0" />
+    <androidPackage spec="androidx.activity:activity:1.9.3" />
+    <androidPackage spec="org.jetbrains.kotlin:kotlin-stdlib:1.8.22" />
+    <androidPackage spec="org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.22" />
+    <androidPackage spec="org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22" />
   </androidPackages>
 </dependencies>

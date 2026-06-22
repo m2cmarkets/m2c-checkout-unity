@@ -4,6 +4,31 @@ All notable changes to `com.m2c.checkout` are documented here.
 
 ## Unreleased
 
+- WebGL `Popup` launch mode now pre-opens a blank popup before async auction
+  creation and reuses it for the hosted checkout URL, reducing popup blocker
+  failures while leaving default tab-style launch free to keep the WebGL tab
+  active during auction creation.
+- Added a WebGL launch mode hint (`Auto`, `NewTab`, `Popup`) in project settings
+  and `M2CConfig`. Browsers still decide the final tab/window presentation.
+- WebGL return handling now accepts postMessage, BroadcastChannel, and storage
+  notifications so a return page that closes quickly is less likely to race the
+  popup-close detector.
+
+## [0.1.2] - 2026-06-21
+
+- Android in-app checkout now uses a Chrome Auth Tab: no minimize button, and the
+  return arrives through a real ActivityResult callback instead of being inferred
+  from app focus, so minimize, OTP / 3-D Secure bounces, and a backgrounded tab no
+  longer trigger a false return. Falls back to Chrome Custom Tabs, then the system
+  browser, on browsers without Auth Tab support, and for https Universal/App Link
+  returns.
+- Bumped the Android dependency to `androidx.browser:browser:1.9.0` and added
+  `androidx.activity`; the build post-processor registers a translucent helper
+  activity that hosts the Auth Tab result launcher.
+- Aligned Android Kotlin stdlib artifacts at build time so Unity or third-party
+  SDKs with older `kotlin-stdlib-jdk7/jdk8` dependencies do not trigger duplicate
+  Kotlin classes.
+
 ## [0.1.1] - 2026-06-21
 
 - Added platform-aware project settings: mobile, WebGL, and optional iOS /
@@ -16,8 +41,8 @@ All notable changes to `com.m2c.checkout` are documented here.
   custom mobile return URLs, and custom status URLs are hidden until needed.
 - Standalone desktop player builds now fail as unsupported instead of launching
   checkout through a system-browser fallback.
-- WebGL popup closes without a return message now reconcile through status
-  polling instead of immediately reporting canceled.
+- WebGL popup closes without a return message now reconcile through brief
+  status polling instead of immediately reporting canceled.
 
 ## [0.1.0] - 2026-06-21
 

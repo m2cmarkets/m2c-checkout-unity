@@ -13,17 +13,18 @@ namespace M2C.Checkout.Internal
 #if UNITY_EDITOR
             return new EditorCheckoutBrowser();
 #elif UNITY_WEBGL
-            return new WebGLCheckoutBrowser();
+            return new WebGLCheckoutBrowser(config.WebGLLaunchMode);
 #elif UNITY_IOS
             // ASWebAuthenticationSession captures custom-scheme callbacks. Universal
             // Links return through the system browser / app-link handoff instead.
             if (!config.UseExternalBrowser && !IsWebUrl(returnUrl ?? config.ReturnUrl)) return new IosInAppBrowser();
             return new SystemBrowser(waitForDeepLink: true);
 #elif UNITY_ANDROID
-            // In-app Chrome Custom Tabs (JNI); it degrades to the system browser if
-            // the AndroidX Browser lib is absent. UseExternalBrowser forces the
-            // external browser outright.
-            if (!config.UseExternalBrowser) return new AndroidCustomTabsBrowser();
+            // In-app return: prefer an Auth Tab (no minimize button, and a real result
+            // callback instead of inferring the return from focus/deep-link). It degrades
+            // to plain Custom Tabs, then the system browser, behind one strategy.
+            // UseExternalBrowser forces the external browser outright.
+            if (!config.UseExternalBrowser) return new AndroidAuthTabBrowser();
             return new SystemBrowser(waitForDeepLink: true);
 #elif UNITY_STANDALONE
             throw new M2CCheckoutException(

@@ -13,9 +13,9 @@ namespace M2C.Checkout
     ///
     /// Note: a customer who kills the external browser without completing produces no
     /// redirect, so a true "dismissed" is not detectable here. Per the foundations
-    /// guidance we do NOT guess cancel from app-lifecycle events; the in-app browser
-    /// (iOS) reports an explicit user-cancel, and otherwise the cancel leg arrives as
-    /// the vendor's redirect to the cancel URL.
+    /// guidance we do NOT guess cancel from app-lifecycle events; the cancel leg
+    /// arrives as the vendor's redirect to the cancel URL or through status
+    /// reconciliation.
     /// </summary>
     public sealed class SystemBrowser : ICheckoutBrowser
     {
@@ -23,7 +23,7 @@ namespace M2C.Checkout
 
         // Short head start for a deep-link callback that may arrive just after the
         // app returns to the foreground. If it does not arrive, the client performs
-        // a single status read and resolves as completed or pending-timeout.
+        // a short status reconciliation and resolves as completed or pending-timeout.
         private const double ReturnGraceSeconds = 0.5;
 
         public SystemBrowser(bool waitForDeepLink)

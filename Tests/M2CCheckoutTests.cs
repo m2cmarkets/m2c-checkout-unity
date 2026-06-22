@@ -89,6 +89,30 @@ namespace M2C.Checkout.Tests
         {
             Assert.AreEqual(expected, M2CApi.ParseClientStatus(raw));
         }
+
+        [TestCase(ClientStatus.Completed, CheckoutOutcome.Completed)]
+        [TestCase(ClientStatus.Failed, CheckoutOutcome.Failed)]
+        [TestCase(ClientStatus.Canceled, CheckoutOutcome.Canceled)]
+        [TestCase(ClientStatus.Processing, CheckoutOutcome.PendingTimeout)]
+        public void Resume_status_read_resolution_only_cancels_on_backend_canceled(ClientStatus status, CheckoutOutcome expected)
+        {
+            CheckoutResult result = M2CCheckoutClient.ResultFromStatusRead("req_123", status);
+
+            Assert.AreEqual(expected, result.Outcome);
+            Assert.AreEqual("req_123", result.RequestId);
+        }
+
+        [TestCase(ClientStatus.Completed, CheckoutOutcome.Completed)]
+        [TestCase(ClientStatus.Failed, CheckoutOutcome.Failed)]
+        [TestCase(ClientStatus.Canceled, CheckoutOutcome.Canceled)]
+        [TestCase(ClientStatus.Processing, CheckoutOutcome.Canceled)]
+        public void Browser_cancel_status_read_resolution_cancels_when_backend_still_processing(ClientStatus status, CheckoutOutcome expected)
+        {
+            CheckoutResult result = M2CCheckoutClient.ResultFromBrowserCancelStatusRead("req_123", status);
+
+            Assert.AreEqual(expected, result.Outcome);
+            Assert.AreEqual("req_123", result.RequestId);
+        }
     }
 
     public class PollScheduleTests
@@ -279,12 +303,14 @@ namespace M2C.Checkout.Tests
                 settings.CancelUrl = " mygame://checkout/cancel ";
                 settings.WebGLReturnUrl = " https://game.example/m2c-return ";
                 settings.WebGLCancelUrl = " https://game.example/m2c-cancel ";
+                settings.WebGLLaunchMode = M2CWebGLLaunchMode.Popup;
 
                 M2CConfig config = settings.ToConfig(M2CCheckoutPlatform.WebGL);
 
                 Assert.AreEqual("pub_test_web", config.PublishableKey);
                 Assert.AreEqual("https://game.example/m2c-return", config.ReturnUrl);
                 Assert.AreEqual("https://game.example/m2c-cancel", config.CancelUrl);
+                Assert.AreEqual(M2CWebGLLaunchMode.Popup, config.WebGLLaunchMode);
             }
             finally
             {
@@ -379,6 +405,46 @@ namespace M2C.Checkout.Tests
 
                 Assert.AreEqual("mygame://checkout/return", config.ReturnUrl);
                 Assert.AreEqual("mygame://checkout/cancel", config.CancelUrl);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(settings);
+            }
+        }
+
+        [Test]
+        public void Mobile_custom_schemes_follow_effective_return_urls()
+        {
+            var settings = ScriptableObject.CreateInstance<M2CCheckoutSettings>();
+            try
+            {
+                settings.DeepLinkScheme = "ignored";
+                settings.ReturnUrl = " paygame://done ";
+                settings.CancelUrl = " mygame://cancel ";
+
+                CollectionAssert.AreEqual(
+                    new[] { "paygame", "mygame" },
+                    settings.EffectiveMobileCustomSchemes);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(settings);
+            }
+        }
+
+        [Test]
+        public void Mobile_custom_schemes_ignore_web_urls()
+        {
+            var settings = ScriptableObject.CreateInstance<M2CCheckoutSettings>();
+            try
+            {
+                settings.DeepLinkScheme = "mygame";
+                settings.ReturnUrl = " https://links.example/return ";
+                settings.CancelUrl = " MYGAME://checkout/cancel ";
+
+                CollectionAssert.AreEqual(
+                    new[] { "mygame" },
+                    settings.EffectiveMobileCustomSchemes);
             }
             finally
             {

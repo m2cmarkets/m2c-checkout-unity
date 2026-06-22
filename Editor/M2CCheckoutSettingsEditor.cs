@@ -129,6 +129,7 @@ namespace M2C.Checkout.Editor
         private SerializedProperty _cancelUrl;
         private SerializedProperty _webGLReturnUrl;
         private SerializedProperty _webGLCancelUrl;
+        private SerializedProperty _webGLLaunchMode;
         private SerializedProperty _statusUrlTemplate;
         private SerializedProperty _browserMode;
         private SerializedProperty _statusPollTimeoutSeconds;
@@ -158,6 +159,7 @@ namespace M2C.Checkout.Editor
             _cancelUrl = serializedObject.FindProperty("CancelUrl");
             _webGLReturnUrl = serializedObject.FindProperty("WebGLReturnUrl");
             _webGLCancelUrl = serializedObject.FindProperty("WebGLCancelUrl");
+            _webGLLaunchMode = serializedObject.FindProperty("WebGLLaunchMode");
             _statusUrlTemplate = serializedObject.FindProperty("StatusUrlTemplate");
             _browserMode = serializedObject.FindProperty("BrowserMode");
             _statusPollTimeoutSeconds = serializedObject.FindProperty("StatusPollTimeoutSeconds");
@@ -165,7 +167,9 @@ namespace M2C.Checkout.Editor
             _useAssociatedDomains = serializedObject.FindProperty("UseAssociatedDomains");
             _associatedDomain = serializedObject.FindProperty("AssociatedDomain");
 
-            if (HasAnyText(_webGLPublishableKey, _webGLReturnUrl, _webGLCancelUrl) || IsWebGLBuildTarget())
+            if (HasAnyText(_webGLPublishableKey, _webGLReturnUrl, _webGLCancelUrl)
+                || _webGLLaunchMode.enumValueIndex != (int)M2CWebGLLaunchMode.Auto
+                || IsWebGLBuildTarget())
                 _webGLExpanded = true;
             if (HasAnyText(_iosPublishableKey, _androidPublishableKey))
                 _mobileKeyOverridesExpanded = true;
@@ -241,7 +245,8 @@ namespace M2C.Checkout.Editor
                 }
             }
 
-            bool hasWebGLSettings = HasAnyText(_webGLPublishableKey, _webGLReturnUrl, _webGLCancelUrl);
+            bool hasWebGLSettings = HasAnyText(_webGLPublishableKey, _webGLReturnUrl, _webGLCancelUrl)
+                                    || _webGLLaunchMode.enumValueIndex != (int)M2CWebGLLaunchMode.Auto;
             if (DrawOptionalToggle(ref _webGLExpanded, "Configure WebGL builds", hasWebGLSettings, "Show browser/WebGL key and return URL fields."))
             {
                 using (new EditorGUI.IndentLevelScope())
@@ -255,6 +260,7 @@ namespace M2C.Checkout.Editor
 
                     DrawProperty(_webGLReturnUrl, "WebGL Success URL", "Success page for WebGL. Must be http(s), and its origin must match the game page or be allowed on the web publishable key when using client-initiated checkout.");
                     DrawProperty(_webGLCancelUrl, "WebGL Cancel URL", "Cancel page for WebGL. Must be http(s), and its origin must match the game page or be allowed on the web publishable key when using client-initiated checkout.");
+                    DrawProperty(_webGLLaunchMode, "WebGL Launch Mode", "Browser hint for WebGL checkout. Browsers may still choose whether the checkout appears as a tab, popup window, or mobile tab sheet.");
 
                     ValidateWebGLUrl(_webGLReturnUrl, "WebGL Success URL");
                     ValidateWebGLUrl(_webGLCancelUrl, "WebGL Cancel URL");
@@ -322,8 +328,10 @@ namespace M2C.Checkout.Editor
                 }
             }
 
-            DrawReadOnlyTextIfDifferent("Effective Success URL", _returnUrl, EffectiveMobileUrl(_returnUrl, "checkout/return"));
-            DrawReadOnlyTextIfDifferent("Effective Cancel URL", _cancelUrl, EffectiveMobileUrl(_cancelUrl, "checkout/cancel"));
+            string effectiveReturnUrl = EffectiveMobileUrl(_returnUrl, "checkout/return");
+            string effectiveCancelUrl = EffectiveMobileUrl(_cancelUrl, "checkout/cancel");
+            DrawReadOnlyTextIfDifferent("Effective Success URL", _returnUrl, effectiveReturnUrl);
+            DrawReadOnlyTextIfDifferent("Effective Cancel URL", _cancelUrl, effectiveCancelUrl);
 
             DrawProperty(_useAssociatedDomains, "Use Universal/App Links", "Also configure HTTPS Universal Links on iOS and App Links on Android.");
             if (_useAssociatedDomains.boolValue)
@@ -334,7 +342,8 @@ namespace M2C.Checkout.Editor
                 }
             }
 
-            if (string.IsNullOrEmpty(Trim(_deepLinkScheme))
+            if (!IsCustomSchemeUrl(effectiveReturnUrl)
+                && !IsCustomSchemeUrl(effectiveCancelUrl)
                 && (!_useAssociatedDomains.boolValue || string.IsNullOrEmpty(Trim(_associatedDomain))))
             {
                 EditorGUILayout.HelpBox("Set a deep link scheme or an associated domain so checkout can return to the app on device.", MessageType.Warning);
@@ -399,6 +408,16 @@ namespace M2C.Checkout.Editor
             string value = Trim(property);
             if (!string.IsNullOrEmpty(value) && !M2CCheckoutSettings.IsHttpUrl(value))
                 EditorGUILayout.HelpBox(label + " must be an http:// or https:// URL.", MessageType.Error);
+        }
+
+        private static bool IsCustomSchemeUrl(string value)
+        {
+            value = (value ?? string.Empty).Trim();
+            int schemeEnd = value.IndexOf("://", System.StringComparison.Ordinal);
+            if (schemeEnd <= 0) return false;
+            string scheme = value.Substring(0, schemeEnd);
+            return !string.Equals(scheme, "http", System.StringComparison.OrdinalIgnoreCase)
+                   && !string.Equals(scheme, "https", System.StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool HasAnyText(params SerializedProperty[] properties)
@@ -470,7 +489,7 @@ namespace M2C.Checkout.Editor
         private static string PackageVersion()
         {
             var info = UnityEditor.PackageManager.PackageInfo.FindForAssembly(typeof(M2CCheckoutSettings).Assembly);
-            return info != null && !string.IsNullOrEmpty(info.version) ? info.version : "0.1.1";
+            return info != null && !string.IsNullOrEmpty(info.version) ? info.version : "0.1.2";
         }
     }
 }

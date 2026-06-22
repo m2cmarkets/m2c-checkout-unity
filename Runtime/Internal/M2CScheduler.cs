@@ -26,6 +26,13 @@ namespace M2C.Checkout.Internal
         /// </summary>
         public event Action<bool> AppFocusChanged;
 
+        /// <summary>
+        /// Raised on the Unity main thread with the Android Auth Tab result, bridged
+        /// from the native M2CAuthTabActivity via UnitySendMessage. Payload is one of
+        /// "RETURNED|&lt;url&gt;", "DISMISSED|", or "ERROR|&lt;message&gt;".
+        /// </summary>
+        public event Action<string> AuthTabResult;
+
         public static M2CScheduler Instance
         {
             get
@@ -52,6 +59,14 @@ namespace M2C.Checkout.Internal
         {
             if (action == null) return;
             StartCoroutine(DelayThenRoutine(seconds, action));
+        }
+
+        // Bridge target for the native Android Auth Tab helper, invoked via
+        // UnityPlayer.UnitySendMessage("M2CCheckoutScheduler", "OnM2CAuthTabResult", payload).
+        // The GameObject and method names are a contract with M2CAuthTabActivity.java.
+        public void OnM2CAuthTabResult(string payload)
+        {
+            AuthTabResult?.Invoke(payload ?? string.Empty);
         }
 
         private static IEnumerator DelayRoutine(double seconds, TaskCompletionSource<bool> tcs)

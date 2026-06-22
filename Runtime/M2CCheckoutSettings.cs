@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace M2C.Checkout
@@ -50,6 +51,9 @@ namespace M2C.Checkout
 
         [Tooltip("Default WebGL cancel return URL. Must be http:// or https:// and hosted by the WebGL page or another origin allowed on the web key.")]
         public string WebGLCancelUrl = "";
+
+        [Tooltip("WebGL browser launch hint. Browsers may still choose whether this appears as a tab, popup window, or mobile tab sheet.")]
+        public M2CWebGLLaunchMode WebGLLaunchMode = M2CWebGLLaunchMode.Auto;
 
         [Tooltip("Optional backend status endpoint template containing {request_id}. Leave blank to poll M2C with the publishable key.")]
         public string StatusUrlTemplate = "";
@@ -107,6 +111,7 @@ namespace M2C.Checkout
             if (!string.IsNullOrEmpty(statusUrl)) config.StatusSource = StatusSource.Url(statusUrl);
 
             config.UseExternalBrowser = BrowserMode == M2CBrowserMode.ExternalBrowser;
+            config.WebGLLaunchMode = WebGLLaunchMode;
 
             if (IsPositiveFinite(StatusPollTimeoutSeconds))
                 config.Poll = new PollSchedule(PollSchedule.Default.RampSeconds, StatusPollTimeoutSeconds);
@@ -145,6 +150,17 @@ namespace M2C.Checkout
         public string EffectiveDeepLinkScheme => TrimOrEmpty(DeepLinkScheme);
 
         public string EffectiveAssociatedDomain => TrimOrEmpty(AssociatedDomain);
+
+        public string[] EffectiveMobileCustomSchemes
+        {
+            get
+            {
+                var schemes = new List<string>(2);
+                AddMobileCustomScheme(schemes, EffectiveMobileReturnUrl);
+                AddMobileCustomScheme(schemes, EffectiveMobileCancelUrl);
+                return schemes.ToArray();
+            }
+        }
 
         public string EffectivePublishableKeyForPlatform(M2CCheckoutPlatform platform)
         {
@@ -223,6 +239,30 @@ namespace M2C.Checkout
                 return false;
             return string.Equals(uri.Scheme, "http", StringComparison.OrdinalIgnoreCase)
                    || string.Equals(uri.Scheme, "https", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static void AddMobileCustomScheme(List<string> schemes, string url)
+        {
+            string scheme = SchemeOf(url);
+            if (string.IsNullOrEmpty(scheme)) return;
+            if (string.Equals(scheme, "http", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(scheme, "https", StringComparison.OrdinalIgnoreCase))
+                return;
+
+            for (int i = 0; i < schemes.Count; i++)
+            {
+                if (string.Equals(schemes[i], scheme, StringComparison.OrdinalIgnoreCase))
+                    return;
+            }
+            schemes.Add(scheme);
+        }
+
+        private static string SchemeOf(string value)
+        {
+            value = TrimOrEmpty(value);
+            if (string.IsNullOrEmpty(value)) return string.Empty;
+            Uri uri;
+            return Uri.TryCreate(value, UriKind.Absolute, out uri) ? uri.Scheme : string.Empty;
         }
 
         private static string TrimOrEmpty(string value)

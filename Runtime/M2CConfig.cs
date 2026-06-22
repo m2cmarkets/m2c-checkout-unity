@@ -120,6 +120,17 @@ namespace M2C.Checkout
         ExternalBrowser
     }
 
+    /// <summary>Browser launch hint for WebGL checkout. Browsers may still choose their own presentation.</summary>
+    public enum M2CWebGLLaunchMode
+    {
+        /// <summary>Use the SDK default: open a new browsing context with no popup features.</summary>
+        Auto,
+        /// <summary>Hint that the browser should open a normal new tab or equivalent.</summary>
+        NewTab,
+        /// <summary>Hint that desktop browsers should open a popup-sized checkout window; pre-opens before client auction creation.</summary>
+        Popup
+    }
+
     /// <summary>
     /// Client configuration. <see cref="StatusSource"/> always applies;
     /// <see cref="PublishableKey"/> is only needed for client-initiated mode and
@@ -169,5 +180,10 @@ namespace M2C.Checkout
         /// the in-app browser. The in-app browser is the default UX on mobile.
         /// </summary>
         public bool UseExternalBrowser = false;
+
+        /// <summary>
+        /// WebGL browser launch hint. Browser settings decide the final tab/window UI.
+        /// </summary>
+        public M2CWebGLLaunchMode WebGLLaunchMode = M2CWebGLLaunchMode.Auto;
     }
 }
