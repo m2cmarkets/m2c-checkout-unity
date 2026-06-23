@@ -114,6 +114,11 @@ CheckoutResult result = await client.StartAsync(new AuctionRequest {
 });
 ```
 
+The SDK automatically attaches checkout-context metadata to the auction:
+`platform` (`webgl` / `ios` / `android`, from the build target) and a coarse
+`device_type` (`mobile` / `desktop`, from `SystemInfo.deviceType`). Both are metadata
+only - never auth or fulfillment - and there is no caller field for either.
+
 ### Coroutine form (for teams avoiding async / on WebGL)
 
 ```csharp

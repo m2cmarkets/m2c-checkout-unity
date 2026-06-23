@@ -155,8 +155,48 @@ namespace M2C.Checkout.Internal
                 .String("reference", req.Reference)
                 .StringArray("segments", req.Segments)
                 .String("language", req.Language)
-                .String("device_type", req.DeviceType)
+                .String("device_type", DetectDeviceType())
+                .String("platform", DetectCheckoutPlatform())
                 .Build();
+        }
+
+        // Coarse device form factor (mobile / desktop), auto-detected at runtime
+        // and sent on every auction - same no-override model as DetectCheckoutPlatform.
+        // SystemInfo.deviceType works in every build, including WebGL (where it
+        // reflects the browser's device), so unlike platform it isn't gated to
+        // non-editor builds. Handheld covers phone and tablet (Unity doesn't split
+        // them); Console/Unknown send no value (omitted by JsonWriter), recorded as
+        // "unknown". Metadata only - never affects auth or fulfillment.
+        private static string DetectDeviceType()
+        {
+            switch (UnityEngine.SystemInfo.deviceType)
+            {
+                case UnityEngine.DeviceType.Handheld:
+                    return "mobile";
+                case UnityEngine.DeviceType.Desktop:
+                    return "desktop";
+                default:
+                    return "";
+            }
+        }
+
+        // Checkout surface metadata, auto-detected from the build target so the
+        // dashboard and conversion webhook can attribute by surface. Sent on every
+        // auction; the server treats it as metadata only (never auth/fulfillment).
+        // Standalone/desktop has no supported checkout flow (CheckoutBrowserFactory
+        // rejects it) and the Editor runs the simulated browser, so both send no
+        // value (omitted by JsonWriter) and the server records "unknown".
+        private static string DetectCheckoutPlatform()
+        {
+#if UNITY_WEBGL && !UNITY_EDITOR
+            return "webgl";
+#elif UNITY_IOS && !UNITY_EDITOR
+            return "ios";
+#elif UNITY_ANDROID && !UNITY_EDITOR
+            return "android";
+#else
+            return "";
+#endif
         }
 
         private static void ValidateTransactionValue(double value)

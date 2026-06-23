@@ -4,6 +4,13 @@ All notable changes to `com.m2c.checkout` are documented here.
 
 ## Unreleased
 
+## [0.2.0] - 2026-06-22
+
+- Device type and checkout platform are now auto-detected and sent automatically.
+  The manual `AuctionRequest.DeviceType` field has been removed (breaking): device
+  type (`mobile` / `desktop`) is derived from `SystemInfo.deviceType` at runtime, and
+  checkout platform (`webgl` / `ios` / `android`) from the build target. Both are
+  metadata only, with no caller override.
 - WebGL `Popup` launch mode now pre-opens a blank popup before async auction
   creation and reuses it for the hosted checkout URL, reducing popup blocker
   failures while leaving default tab-style launch free to keep the WebGL tab

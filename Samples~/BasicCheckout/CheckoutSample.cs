@@ -70,7 +70,6 @@ public sealed class CheckoutSample : MonoBehaviour
                 TransactionValue = 4.99,
                 Currency = "USD",
                 Description = "100 Gems",
-                DeviceType = "mobile",
             });
             HandleResult(result);
         }

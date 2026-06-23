@@ -1,6 +1,6 @@
 {
   "name": "com.m2c.checkout",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "displayName": "M2C Checkout",
   "description": "Headless Unity checkout SDK for M2C. Launch the winning vendor's hosted checkout, handle returns on iOS, Android, and WebGL, and reflect conversion status to your UI.",
   "unity": "2021.3",

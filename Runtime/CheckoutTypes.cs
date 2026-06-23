@@ -127,6 +127,5 @@ namespace M2C.Checkout
         public string Reference;      // your order id; echoed back in the webhook
         public string[] Segments;
         public string Language;
-        public string DeviceType;
     }
 }
