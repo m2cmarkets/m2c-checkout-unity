@@ -2,8 +2,6 @@
 
 All notable changes to `com.m2c.checkout` are documented here.
 
-## Unreleased
-
 ## [0.2.0] - 2026-06-22
 
 - Device type and checkout platform are now auto-detected and sent automatically.
