@@ -64,6 +64,18 @@ namespace M2C.Checkout
         [Tooltip("Total seconds to poll status before resolving PendingTimeout.")]
         public float StatusPollTimeoutSeconds = 90f;
 
+        [Tooltip("Advanced: if your backend status endpoint lags, also check M2C's checkout status after a short delay. Customer-facing progress only - grant goods from your signed conversion webhook. Needs a publishable key for the current platform.")]
+        public bool UseM2CStatusFallback = false;
+
+        [Tooltip("Seconds before the M2C status fallback kicks in (5-60). Only used when Use M2C Status Fallback is on.")]
+        public float M2CFallbackAfterSeconds = 10f;
+
+        /// <summary>Inclusive lower bound applied to <see cref="M2CFallbackAfterSeconds"/> when building config.</summary>
+        public const float MinFallbackAfterSeconds = 5f;
+
+        /// <summary>Inclusive upper bound applied to <see cref="M2CFallbackAfterSeconds"/> when building config.</summary>
+        public const float MaxFallbackAfterSeconds = 60f;
+
         [Tooltip("Custom URL scheme for the return deep link, WITHOUT the ://. e.g. \"mygame\" for mygame://checkout/return. Recommended for games - no domain verification needed.")]
         public string DeepLinkScheme = "mygame";
 
@@ -121,6 +133,9 @@ namespace M2C.Checkout
 
             string cancelUrl = EffectiveCancelUrlForPlatform(platform);
             if (!string.IsNullOrEmpty(cancelUrl)) config.CancelUrl = cancelUrl;
+
+            config.UseM2CStatusFallback = UseM2CStatusFallback;
+            config.M2CFallbackAfterSeconds = ClampFallbackSeconds(M2CFallbackAfterSeconds);
         }
 
         public string EffectivePublishableKey => EffectivePublishableKeyForPlatform(CurrentPlatform);
@@ -273,6 +288,14 @@ namespace M2C.Checkout
         private static bool IsPositiveFinite(float value)
         {
             return !float.IsNaN(value) && !float.IsInfinity(value) && value > 0f;
+        }
+
+        private static double ClampFallbackSeconds(float value)
+        {
+            if (float.IsNaN(value) || float.IsInfinity(value)) return MinFallbackAfterSeconds;
+            if (value < MinFallbackAfterSeconds) return MinFallbackAfterSeconds;
+            if (value > MaxFallbackAfterSeconds) return MaxFallbackAfterSeconds;
+            return value;
         }
     }
 }

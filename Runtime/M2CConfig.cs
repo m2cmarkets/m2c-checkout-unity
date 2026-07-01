@@ -185,5 +185,18 @@ namespace M2C.Checkout
         /// WebGL browser launch hint. Browser settings decide the final tab/window UI.
         /// </summary>
         public M2CWebGLLaunchMode WebGLLaunchMode = M2CWebGLLaunchMode.Auto;
+
+        /// <summary>
+        /// Opt-in resilience: when <see cref="StatusSource"/> is the merchant's own
+        /// (Url/Callback) and it has not gone terminal within
+        /// <see cref="M2CFallbackAfterSeconds"/>, also read M2C's advisory status once
+        /// per poll cycle and resolve on a terminal result. Requires
+        /// <see cref="PublishableKey"/>. Off by default; advisory UX only - the signed
+        /// conversion webhook stays the fulfillment authority.
+        /// </summary>
+        public bool UseM2CStatusFallback = false;
+
+        /// <summary>Consult M2C only after the primary source has stayed non-terminal this long. Clamped to 5-60s from the settings asset.</summary>
+        public double M2CFallbackAfterSeconds = 10.0;
     }
 }

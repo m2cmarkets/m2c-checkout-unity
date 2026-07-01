@@ -492,4 +492,67 @@ namespace M2C.Checkout.Tests
             }
         }
     }
+
+    public class StatusFallbackTests
+    {
+        private const string RequestId = "11111111-1111-1111-1111-111111111111";
+
+        [Test]
+        public void Fallback_is_off_by_default()
+        {
+            var settings = ScriptableObject.CreateInstance<M2CCheckoutSettings>();
+            try
+            {
+                Assert.IsFalse(settings.ToConfig().UseM2CStatusFallback);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(settings);
+            }
+        }
+
+        [Test]
+        public void Enabled_fallback_maps_and_clamps_delay_to_5_60()
+        {
+            AssertFallbackSeconds(10f, 10.0);      // within range, unchanged
+            AssertFallbackSeconds(2f, 5.0);        // below min -> clamped up
+            AssertFallbackSeconds(120f, 60.0);     // above max -> clamped down
+            AssertFallbackSeconds(float.NaN, 5.0); // non-finite -> min
+        }
+
+        [Test]
+        public void Enabled_fallback_without_publishable_key_rejects_with_validation_error()
+        {
+            var config = new M2CConfig
+            {
+                StatusSource = StatusSource.Url("https://shop.example/status/{request_id}"),
+                UseM2CStatusFallback = true,
+            };
+            var client = new M2CCheckoutClient(config);
+
+            // CheckStatusAsync validates the status source synchronously before any
+            // network read, so the fallback-without-key error surfaces here.
+            var e = Assert.Throws<M2CCheckoutException>(() => { _ = client.CheckStatusAsync(RequestId); });
+            Assert.AreEqual(M2CErrorCode.InvalidRequest, e.Code);
+        }
+
+        private static void AssertFallbackSeconds(float input, double expected)
+        {
+            var settings = ScriptableObject.CreateInstance<M2CCheckoutSettings>();
+            try
+            {
+                settings.UseM2CStatusFallback = true;
+                settings.M2CFallbackAfterSeconds = input;
+
+                M2CConfig config = settings.ToConfig();
+
+                Assert.IsTrue(config.UseM2CStatusFallback);
+                Assert.AreEqual(expected, config.M2CFallbackAfterSeconds, 1e-6);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(settings);
+            }
+        }
+    }
 }

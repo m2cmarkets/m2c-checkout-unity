@@ -133,6 +133,8 @@ namespace M2C.Checkout.Editor
         private SerializedProperty _statusUrlTemplate;
         private SerializedProperty _browserMode;
         private SerializedProperty _statusPollTimeoutSeconds;
+        private SerializedProperty _useM2CStatusFallback;
+        private SerializedProperty _m2cFallbackAfterSeconds;
         private SerializedProperty _deepLinkScheme;
         private SerializedProperty _useAssociatedDomains;
         private SerializedProperty _associatedDomain;
@@ -163,6 +165,8 @@ namespace M2C.Checkout.Editor
             _statusUrlTemplate = serializedObject.FindProperty("StatusUrlTemplate");
             _browserMode = serializedObject.FindProperty("BrowserMode");
             _statusPollTimeoutSeconds = serializedObject.FindProperty("StatusPollTimeoutSeconds");
+            _useM2CStatusFallback = serializedObject.FindProperty("UseM2CStatusFallback");
+            _m2cFallbackAfterSeconds = serializedObject.FindProperty("M2CFallbackAfterSeconds");
             _deepLinkScheme = serializedObject.FindProperty("DeepLinkScheme");
             _useAssociatedDomains = serializedObject.FindProperty("UseAssociatedDomains");
             _associatedDomain = serializedObject.FindProperty("AssociatedDomain");
@@ -310,6 +314,28 @@ namespace M2C.Checkout.Editor
                 || float.IsInfinity(_statusPollTimeoutSeconds.floatValue))
             {
                 EditorGUILayout.HelpBox("Status Poll Timeout must be greater than 0 seconds.", MessageType.Error);
+            }
+
+            EditorGUILayout.Space(6);
+            DrawProperty(_useM2CStatusFallback, "Use M2C Status Fallback", "If your backend status endpoint lags, also check M2C's checkout status after a short delay. Customer-facing progress only - grant goods from your signed conversion webhook.");
+            if (_useM2CStatusFallback.boolValue)
+            {
+                using (new EditorGUI.IndentLevelScope())
+                {
+                    DrawProperty(_m2cFallbackAfterSeconds, "Fallback After Seconds", "Seconds to wait before also checking M2C status. Clamped to 5-60.");
+                    if (_m2cFallbackAfterSeconds.floatValue < M2CCheckoutSettings.MinFallbackAfterSeconds
+                        || _m2cFallbackAfterSeconds.floatValue > M2CCheckoutSettings.MaxFallbackAfterSeconds)
+                    {
+                        EditorGUILayout.HelpBox(
+                            "Fallback After Seconds is clamped to " + M2CCheckoutSettings.MinFallbackAfterSeconds
+                            + "-" + M2CCheckoutSettings.MaxFallbackAfterSeconds + " seconds.",
+                            MessageType.Info);
+                    }
+                    if (!HasAnyPublishableKey())
+                    {
+                        EditorGUILayout.HelpBox("The M2C status fallback reads M2C with a publishable key. Set a publishable key for the platforms that use it, or turn this off.", MessageType.Warning);
+                    }
+                }
             }
         }
 
@@ -489,7 +515,7 @@ namespace M2C.Checkout.Editor
         private static string PackageVersion()
         {
             var info = UnityEditor.PackageManager.PackageInfo.FindForAssembly(typeof(M2CCheckoutSettings).Assembly);
-            return info != null && !string.IsNullOrEmpty(info.version) ? info.version : "0.1.2";
+            return info != null && !string.IsNullOrEmpty(info.version) ? info.version : "0.2.3";
         }
     }
 }

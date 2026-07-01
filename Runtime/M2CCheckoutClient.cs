@@ -20,6 +20,7 @@ namespace M2C.Checkout
         private readonly M2CConfig _config;
         private readonly M2CApi _api;
         private static bool _inFlight;
+        private bool _loggedFallbackFailure;
         private const double ClosedStatusWindowSeconds = 1.5;
         private const double ResumedStatusWindowSeconds = 3.0;
 
@@ -278,6 +279,7 @@ namespace M2C.Checkout
             var sched = _config.Poll ?? PollSchedule.Default;
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
             int attempt = 0;
+            bool useFallback = ShouldUseM2CFallback(statusSource);
 
             while (stopwatch.Elapsed.TotalSeconds < sched.TotalWindowSeconds)
             {
@@ -293,7 +295,11 @@ namespace M2C.Checkout
                 double remaining = sched.TotalWindowSeconds - stopwatch.Elapsed.TotalSeconds;
                 if (remaining <= 0) break;
 
-                ClientStatus status;
+                // Default to Processing so a retryable/transient primary failure falls
+                // through to the fallback check below instead of looping straight to the
+                // next attempt: a status URL that is 503ing or timing out must still let
+                // the M2C fallback answer once past the threshold.
+                ClientStatus status = ClientStatus.Processing;
                 try
                 {
                     status = await ResolveStatusWithinBudgetAsync(requestId, statusSource, remaining);
@@ -307,15 +313,15 @@ namespace M2C.Checkout
                         throw;
                     }
 
+                    // Retryable: leave status as Processing and fall through - the switch
+                    // takes its default path and the fallback (if past threshold) runs.
                     Debug.LogWarning("[M2C] status read failed, will retry: " + e.Message);
-                    continue;
                 }
                 catch (Exception e)
                 {
-                    // A transient status-read failure must not fail the checkout; keep
-                    // polling until the window closes (then pending-timeout).
+                    // A transient status-read failure must not fail the checkout; treat it
+                    // as Processing and fall through to the fallback / next attempt.
                     Debug.LogWarning("[M2C] status read failed, will retry: " + e.Message);
-                    continue;
                 }
 
                 switch (status)
@@ -331,6 +337,24 @@ namespace M2C.Checkout
                         return Terminal(new CheckoutCanceled(requestId), CheckoutState.Canceled);
                     default:
                         break; // processing - keep polling
+                }
+
+                // Opt-in M2C-status fallback: once the merchant's own source has stayed
+                // non-terminal past the threshold, also consult M2C once per cycle. All
+                // fallback failures are swallowed; the signed webhook stays the truth.
+                if (useFallback && stopwatch.Elapsed.TotalSeconds >= _config.M2CFallbackAfterSeconds)
+                {
+                    double fallbackRemaining = sched.TotalWindowSeconds - stopwatch.Elapsed.TotalSeconds;
+                    if (fallbackRemaining > 0)
+                    {
+                        ClientStatus fallbackStatus = await ReadM2CFallbackAsync(requestId, fallbackRemaining);
+                        CheckoutResult fallbackResult = ResultFromStatusRead(requestId, fallbackStatus);
+                        if (fallbackResult.Outcome != CheckoutOutcome.PendingTimeout)
+                        {
+                            ResumeStore.Clear();
+                            return Terminal(fallbackResult, StateForResult(fallbackResult));
+                        }
+                    }
                 }
             }
 
@@ -511,6 +535,40 @@ namespace M2C.Checkout
             throw new M2CCheckoutException(M2CErrorCode.Network, "status read timed out");
         }
 
+        // The M2C-status fallback backs a merchant's own (Url/Callback) source: it is
+        // redundant when the primary already reads M2C, needs the publishable key the
+        // M2C read is authenticated by, and never applies to the reserved subscribe
+        // source. ValidateStatusSource fails loud when it is on without a key; this
+        // degrades to no fallback if a key is somehow absent at poll time.
+        private bool ShouldUseM2CFallback(StatusSource statusSource)
+        {
+            if (!_config.UseM2CStatusFallback) return false;
+            StatusSource src = statusSource ?? _config.StatusSource ?? StatusSource.M2C;
+            if (src.Kind != StatusSourceKind.Url && src.Kind != StatusSourceKind.Callback) return false;
+            return !string.IsNullOrEmpty(_config.PublishableKey);
+        }
+
+        private async Task<ClientStatus> ReadM2CFallbackAsync(string requestId, double timeoutBudgetSeconds)
+        {
+            try
+            {
+                return await ResolveStatusWithinBudgetAsync(requestId, StatusSource.M2C, timeoutBudgetSeconds);
+            }
+            catch (Exception e)
+            {
+                // A fallback read must never fail a checkout the primary could still
+                // complete on its own; swallow everything and let the primary drive.
+                // Warn once, not every cycle, so a persistently failing fallback (a
+                // misconfigured key/origin, or an M2C blip) does not spam the log.
+                if (!_loggedFallbackFailure)
+                {
+                    _loggedFallbackFailure = true;
+                    Debug.LogWarning("[M2C] M2C status fallback read failed and is being ignored (the primary source still drives): " + e.Message);
+                }
+                return ClientStatus.Processing;
+            }
+        }
+
         private static void ObserveFault(Task<ClientStatus> task)
         {
             task.ContinueWith(t =>
@@ -555,6 +613,13 @@ namespace M2C.Checkout
                 throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "subscribe status source is not implemented in v1");
             if (src.Kind == StatusSourceKind.M2C && string.IsNullOrEmpty(_config.PublishableKey))
                 throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, MissingStatusPublishableKeyMessage());
+            // The opt-in M2C fallback backs a merchant's own source, so it needs the
+            // same publishable key the M2C read requires. Fail loud rather than
+            // silently never falling back.
+            if (_config.UseM2CStatusFallback
+                && (src.Kind == StatusSourceKind.Url || src.Kind == StatusSourceKind.Callback)
+                && string.IsNullOrEmpty(_config.PublishableKey))
+                throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, MissingFallbackPublishableKeyMessage());
         }
 
         private static string MissingPublishableKeyMessage()
@@ -572,6 +637,15 @@ namespace M2C.Checkout
             return "the m2c status source requires a web publishable key on WebGL; set WebGL Publishable Key, or use Url or Callback for backend-initiated checkout";
 #else
             return "the m2c status source requires a publishable key; use Url or Callback for backend-initiated checkout";
+#endif
+        }
+
+        private static string MissingFallbackPublishableKeyMessage()
+        {
+#if UNITY_WEBGL && !UNITY_EDITOR
+            return "M2C status fallback requires a web publishable key on WebGL; set WebGL Publishable Key, or turn off Use M2C Status Fallback";
+#else
+            return "M2C status fallback requires a publishable key; set one for this platform, or turn off Use M2C Status Fallback";
 #endif
         }
 
