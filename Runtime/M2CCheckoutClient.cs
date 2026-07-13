@@ -21,7 +21,6 @@ namespace M2C.Checkout
         private readonly M2CApi _api;
         private static bool _inFlight;
         private bool _loggedFallbackFailure;
-        private const double ClosedStatusWindowSeconds = 1.5;
         private const double ResumedStatusWindowSeconds = 3.0;
 
         /// <summary>Fired on the Unity main thread for every state transition.</summary>
@@ -173,6 +172,8 @@ namespace M2C.Checkout
                 BrowserOutcome outcome;
                 try
                 {
+                    var requestContext = browser as ICheckoutBrowserRequestContext;
+                    if (requestContext != null) requestContext.SetRequestId(requestId);
                     outcome = await browser.LaunchAsync(checkoutUrl, returnUrl, cancelUrl);
                 }
                 catch (Exception e)
@@ -187,11 +188,10 @@ namespace M2C.Checkout
                 if (outcome.Result == BrowserResult.Launched)
                     return await PollAsync(requestId);
 
-                // Closed: WebGL can observe a tab/window close, but that close can race
-                // with postMessage delivery. Keep this snappy for true abandons while
-                // still giving already-visible terminal status a chance to win.
+                // Closed: WebGL close is ambiguous and may follow a completed payment
+                // whose webhook-fed status has not reached the merchant yet.
                 if (outcome.Result == BrowserResult.Closed)
-                    return await ResolveViaShortStatusPollAsync(requestId, ClosedStatusWindowSeconds);
+                    return await PollAsync(requestId);
 
                 // Resumed: a return-capable surface ended with no return URL. A short
                 // status window catches terminal state that did not redirect. It is
@@ -358,15 +358,15 @@ namespace M2C.Checkout
                 }
             }
 
-            // Window elapsed while still processing. The webhook is the authority; the
-            // merchant should show "we'll confirm shortly".
-            ResumeStore.Clear();
-            return Terminal(new CheckoutPendingTimeout(requestId), CheckoutState.PendingTimeout);
+            // Browser tabs can suspend the Unity loop while checkout is open. Take a
+            // final authoritative read after the wall-clock window so a completion
+            // that landed during suspension is not returned as pending without ever
+            // being observed.
+            return await ResolveStatusReadWithFallbackAsync(requestId, false, statusSource);
         }
 
-        // Resolve a return-less close with a bounded, short poll: terminal backend
-        // status wins without making an ambiguous browser close wait out the full
-        // checkout poll window.
+        // Resolve a return-less mobile resume with a bounded, short poll. WebGL
+        // closes use PollAsync because their completion signal is ambiguous.
         private async Task<CheckoutResult> ResolveViaShortStatusPollAsync(string requestId, double maxWindowSeconds)
         {
             SetState(CheckoutState.Polling);
@@ -436,13 +436,13 @@ namespace M2C.Checkout
             return await ResolveStatusReadWithFallbackAsync(requestId, true);
         }
 
-        private async Task<CheckoutResult> ResolveStatusReadWithFallbackAsync(string requestId, bool cancelWhenProcessing)
+        private async Task<CheckoutResult> ResolveStatusReadWithFallbackAsync(string requestId, bool cancelWhenProcessing, StatusSource statusSource = null)
         {
-            SetState(CheckoutState.Polling);
+            if (State != CheckoutState.Polling) SetState(CheckoutState.Polling);
             ClientStatus status;
             try
             {
-                status = await ResolveStatusWithinBudgetAsync(requestId, null, M2CApi.DefaultHttpTimeoutSeconds);
+                status = await ResolveStatusWithinBudgetAsync(requestId, statusSource, M2CApi.DefaultHttpTimeoutSeconds);
             }
             catch (M2CCheckoutException e) when (!IsRetryableStatusRead(e))
             {
@@ -460,6 +460,8 @@ namespace M2C.Checkout
                 Debug.LogWarning("[M2C] status read failed, treating as " + (cancelWhenProcessing ? "canceled" : "pending") + ": " + e.Message);
                 status = ClientStatus.Processing;
             }
+            if (status == ClientStatus.Processing && ShouldUseM2CFallback(statusSource))
+                status = await ReadM2CFallbackAsync(requestId, M2CApi.DefaultHttpTimeoutSeconds);
             ResumeStore.Clear();
             CheckoutResult result = cancelWhenProcessing
                 ? ResultFromBrowserCancelStatusRead(requestId, status)

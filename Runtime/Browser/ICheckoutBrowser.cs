@@ -5,7 +5,7 @@ namespace M2C.Checkout
     /// <summary>Whether the browser yielded a return URL or the customer dismissed it.</summary>
     public enum BrowserResult
     {
-        /// <summary>The customer came back to the app with a return URL (deep link or postMessage).</summary>
+        /// <summary>The customer came back to the app with a validated return URL.</summary>
         Returned,
         /// <summary>The checkout was launched in a surface that cannot report a return; proceed to status polling.</summary>
         Launched,
@@ -20,8 +20,8 @@ namespace M2C.Checkout
         /// </summary>
         Canceled,
         /// <summary>
-        /// A browser surface closed without a return URL. The core polls status very
-        /// briefly because browser close can race with WebGL postMessage delivery.
+        /// A browser surface closed without a return URL. The core polls status over
+        /// the configured window because browser close is not payment authority.
         /// </summary>
         Closed,
         /// <summary>
@@ -51,8 +51,9 @@ namespace M2C.Checkout
     /// <summary>
     /// Per-target strategy that launches the vendor's hosted checkout and resolves
     /// when the customer returns. Implementations: an Editor mock, a deep-link
-    /// (system or in-app browser) launcher on mobile, and a popup + postMessage
-    /// shim on WebGL. The core, not the strategy, decides success vs cancel.
+    /// (system or in-app browser) launcher on mobile, and a nonce-bound
+    /// same-origin return shim on WebGL. The core, not the strategy, decides
+    /// success vs cancel.
     /// </summary>
     public interface ICheckoutBrowser
     {
@@ -81,5 +82,11 @@ namespace M2C.Checkout
     {
         /// <summary>Apply temporary runtime settings needed while this browser surface is active.</summary>
         System.IDisposable EnterRuntimeScope();
+    }
+
+    internal interface ICheckoutBrowserRequestContext
+    {
+        /// <summary>Bind browser-local return signaling to the active checkout request.</summary>
+        void SetRequestId(string requestId);
     }
 }

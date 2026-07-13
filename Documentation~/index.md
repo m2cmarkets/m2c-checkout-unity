@@ -30,14 +30,15 @@ For WebGL client-initiated checkout or M2C status polling, set WebGL Publishable
 Key to a web/browser publishable key and add the exact page origin serving the
 game to that key. Backend-initiated WebGL with a custom status URL can leave the
 WebGL key blank. WebGL success and cancel URLs must be `http://` or `https://`
-pages that post a return message back to the opener. Same-origin return pages
-should also notify `BroadcastChannel('m2c_checkout')` or write
-`localStorage.m2c_checkout_return` with the same message for extra browser
-resilience.
+pages. The SDK severs `window.opener` before navigating to checkout. A
+same-origin return page can wake the game through the request-scoped, nonce-bound
+`BroadcastChannel('m2c_checkout')` / localStorage bridge documented in the full
+README. The vendor must include the auction `request_id` in its final redirect.
+Cross-origin and iframe-embedded flows immediately use status reconciliation.
 
-If the checkout surface closes before that return message is received, the SDK
-polls status briefly and may return `PendingTimeout`; the webhook-fed backend
-remains the authority.
+If the checkout surface closes before a valid return signal is received, the
+SDK uses the full configured status-poll window and may return `PendingTimeout`;
+the webhook-fed backend remains the authority.
 
 For client-initiated WebGL, call checkout directly from the click/tap handler.
 `Auto` and `NewTab` launch after the auction URL is ready so the WebGL tab keeps

@@ -189,28 +189,39 @@ Client-initiated WebGL checkout and M2C status polling require a web/browser
 publishable key; backend-initiated WebGL can leave it blank when `StatusSource`
 points at your backend. When you use a web publishable key, add the exact WebGL
 game page origin to that key and use `http(s)` success/cancel pages whose origins
-either match the game page or are also allowed on the key. The merchant
-`success_url` / `cancel_url` page must post a message to its opener so the popup
-shim can capture the return:
+either match the game page or are also allowed on the key. The SDK severs
+`window.opener` before navigating to the vendor checkout. For immediate return
+detection, use a success/cancel page on the game origin. The vendor must append
+the auction's `request_id` to the final redirect URL. The return page uses that
+ID to read and publish only the matching checkout's short-lived nonce:
 
 ```js
-const message = { m2c: 'return', url: location.href };
-if (window.opener && !window.opener.closed) {
-  window.opener.postMessage(message, 'https://your-app-origin');
-}
 try {
-  const channel = new BroadcastChannel('m2c_checkout');
-  channel.postMessage(message);
-  channel.close();
-} catch {}
-try {
-  localStorage.setItem('m2c_checkout_return', JSON.stringify(message));
+  const requestId = new URL(location.href).searchParams.get('request_id');
+  const keyPart = requestId && encodeURIComponent(requestId.toLowerCase());
+  const activeKey = keyPart && `m2c_checkout_active:${keyPart}`;
+  const returnKey = keyPart && `m2c_checkout_return:${keyPart}`;
+  const active = activeKey && JSON.parse(localStorage.getItem(activeKey) || 'null');
+  if (active?.nonce && active.expires_at > Date.now() &&
+      active.request_id.toLowerCase() === requestId.toLowerCase()) {
+    const message = { m2c: 'return', request_id: active.request_id, nonce: active.nonce, url: location.href };
+    try {
+      const channel = new BroadcastChannel('m2c_checkout');
+      channel.postMessage(message);
+      channel.close();
+    } catch {}
+    localStorage.setItem(returnKey, JSON.stringify(message));
+  }
 } catch {}
 ```
 
-If the checkout surface closes before that return message is received, the SDK
-polls status briefly and may return `PendingTimeout`; the webhook-fed backend
-remains the authority.
+Each request has separate storage keys, so concurrent game tabs cannot consume
+or overwrite each other's return. The bridge accepts only the active request ID,
+nonce, and a configured same-origin return or cancel URL. Cross-origin returns,
+iframe-embedded games, unavailable storage or secure randomness, and secure
+no-handle browser fallbacks skip the bridge and immediately use the configured
+status polling window. An ambiguous WebGL close also uses the full configured
+window. The webhook-fed backend remains the authority.
 
 For client-initiated WebGL, call `StartAsync` directly from the click/tap handler
 that starts checkout. `Auto` and `NewTab` launch checkout after the auction URL is
@@ -219,8 +230,8 @@ mode pre-opens a blank popup before the async auction request, then navigates it
 to the hosted checkout URL when the auction returns; this can reduce popup
 blocker failures on desktop browsers. `WebGL Launch Mode` is only a browser hint
 (`Auto`, `NewTab`, or `Popup`); desktop and mobile browsers may still choose their
-own tab, popup window, or tab sheet presentation. The return page must preserve
-`window.opener`, so do not use `noopener` on this checkout surface.
+own tab, popup window, or tab sheet presentation. Do not add an opener dependency
+to the return page; the SDK deliberately severs it before cross-origin navigation.
 
 For client-initiated local WebGL testing, use a test web publishable key with the
 exact loopback origin Unity serves, such as `http://localhost:8000`. `localhost`,

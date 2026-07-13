@@ -2,6 +2,21 @@
 
 All notable changes to `com.m2c.checkout` are documented here.
 
+## [0.3.1] - 2026-07-13
+
+- **Breaking for WebGL return pages:** the old `window.opener.postMessage`
+  helper is no longer accepted. Vendors must append the auction `request_id` to
+  same-origin success/cancel redirects, and return pages must use the
+  request-scoped nonce bridge shown in the README. Existing cross-origin return
+  pages continue through authoritative status reconciliation.
+- WebGL checkout windows now sever `window.opener` before vendor navigation.
+  Browsers with a read-only opener use a secure `noopener`, status-only fallback
+  rather than failing checkout. Missing secure randomness, partitioned iframe
+  storage, cross-origin returns, and ambiguous closes also reconcile over the
+  configured status window.
+- Request-scoped storage prevents concurrent same-origin game tabs from
+  overwriting each other's return nonce.
+
 ## [0.2.0] - 2026-06-22
 
 - Device type and checkout platform are now auto-detected and sent automatically.
