@@ -117,6 +117,9 @@ public sealed class CheckoutSample : MonoBehaviour
             case CheckoutOutcome.PendingTimeout:
                 Debug.Log("[M2C] still processing - we'll confirm shortly");
                 break;
+            case CheckoutOutcome.FallbackStarted:
+                Debug.Log("[M2C] native billing took responsibility - its own result decides fulfillment");
+                break;
         }
     }
 }

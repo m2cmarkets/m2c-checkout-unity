@@ -2,6 +2,20 @@
 
 All notable changes to `com.m2c.checkout` are documented here.
 
+## [0.5.0] - 2026-07-21
+
+- Added an opt-in, merchant-owned native billing fallback for definitely-not-launched
+  Unity checkouts, with typed reasons and per-call disable support.
+- Added a bounded, cancellable client-auction deadline (8-30s; 10s recommended)
+  that is active only when fallback is enabled.
+- Added the terminal `FallbackStarted` result. It means the merchant IAP flow
+  accepted responsibility, never payment or entitlement success.
+- Preserved the original checkout exception when fallback declines or its handler
+  fails; ambiguous handler failures are marked `HandlerOutcomeUnknown` and must
+  not be retried automatically.
+- Fenced launch with an invocation-local monotonic latch and a distinct WebGL
+  prepared-window failure so fallback cannot run after possible vendor exposure.
+
 ## [0.4.0] - 2026-07-20
 
 - Version aligned with the unified 0.4.0 release across the M2C SDK family

@@ -5,7 +5,7 @@ namespace M2C.Checkout
     /// <summary>
     /// The canonical checkout state machine, shared with the other client SDKs.
     /// Surfaced through <see cref="M2CCheckoutClient.OnStateChanged"/> so the
-    /// merchant can render progress. The four terminal outcomes are also returned
+    /// merchant can render progress. The five terminal result outcomes are returned
     /// as a <see cref="CheckoutResult"/>; <see cref="Error"/> corresponds to a
     /// thrown <see cref="M2CCheckoutException"/>.
     /// </summary>
@@ -22,6 +22,7 @@ namespace M2C.Checkout
         Failed,
         Canceled,
         PendingTimeout,
+        FallbackStarted,
         Error
     }
 
@@ -43,8 +44,69 @@ namespace M2C.Checkout
         Completed,
         Failed,
         Canceled,
-        PendingTimeout
+        PendingTimeout,
+        FallbackStarted
     }
+
+    /// <summary>Why a definitely-not-launched checkout entered the merchant's fallback flow.</summary>
+    public enum FallbackReason
+    {
+        NoBids,
+        Timeout,
+        ApiError,
+        LaunchFailed
+    }
+
+    /// <summary>The merchant fallback handler's immediate responsibility decision.</summary>
+    public enum FallbackDecision
+    {
+        Unavailable,
+        Accepted
+    }
+
+    /// <summary>Per-call override for the fallback policy configured on the client.</summary>
+    public enum FallbackMode
+    {
+        Inherit,
+        Disabled
+    }
+
+    /// <summary>Metadata attached to the original checkout exception after fallback cannot take responsibility.</summary>
+    public enum FallbackStatus
+    {
+        Declined,
+        HandlerOutcomeUnknown
+    }
+
+    /// <summary>Optional data and policy for one checkout start.</summary>
+    public sealed class CheckoutStartOptions
+    {
+        public FallbackMode FallbackMode = FallbackMode.Inherit;
+        public string FallbackProductId;
+    }
+
+    /// <summary>Context passed to a merchant fallback handler. It never represents payment success.</summary>
+    public sealed class FallbackContext
+    {
+        public string AttemptId { get; internal set; }
+        public FallbackReason Reason { get; internal set; }
+        public M2CCheckoutException OriginalError { get; internal set; }
+        public string RequestId { get; internal set; }
+        public string FallbackProductId { get; internal set; }
+        public long LatencyMs { get; internal set; }
+        public double TransactionValue { get; internal set; }
+        public string Currency { get; internal set; }
+        public string Description { get; internal set; }
+        public string Reference { get; internal set; }
+    }
+
+    /// <summary>
+    /// Async merchant hook that accepts responsibility for presenting the game's
+    /// existing native billing flow. Accepted does not mean the purchase completed.
+    /// </summary>
+    public delegate System.Threading.Tasks.Task<FallbackDecision> CheckoutFallbackHandler(
+        FallbackReason reason,
+        FallbackContext context);
 
     /// <summary>
     /// Terminal result of a checkout. Branch on the concrete subtype, or switch
@@ -52,7 +114,10 @@ namespace M2C.Checkout
     /// </summary>
     public abstract class CheckoutResult
     {
-        /// <summary>Correlates this checkout with the merchant webhook's <c>reference</c>/<c>request_id</c>.</summary>
+        /// <summary>
+        /// Correlates this checkout with the merchant webhook's <c>reference</c>/<c>request_id</c>.
+        /// Null only for <see cref="CheckoutFallbackStarted"/> when no auction response supplied one.
+        /// </summary>
         public string RequestId { get; }
 
         /// <summary>Outcome discriminator.</summary>
@@ -94,6 +159,24 @@ namespace M2C.Checkout
     {
         public override CheckoutOutcome Outcome => CheckoutOutcome.PendingTimeout;
         public CheckoutPendingTimeout(string requestId) : base(requestId) { }
+    }
+
+    /// <summary>
+    /// The merchant's native billing flow accepted responsibility before any vendor
+    /// checkout was exposed. Fulfillment remains entirely in the merchant's IAP path.
+    /// </summary>
+    public sealed class CheckoutFallbackStarted : CheckoutResult
+    {
+        public override CheckoutOutcome Outcome => CheckoutOutcome.FallbackStarted;
+        public string AttemptId { get; }
+        public FallbackReason Reason { get; }
+
+        public CheckoutFallbackStarted(string attemptId, string requestId, FallbackReason reason)
+            : base(requestId)
+        {
+            AttemptId = attemptId;
+            Reason = reason;
+        }
     }
 
     /// <summary>

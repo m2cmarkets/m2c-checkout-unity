@@ -52,12 +52,24 @@ namespace M2C.Checkout
         /// <summary>The HTTP status code, or 0 for transport-level failures.</summary>
         public int HttpStatus { get; }
 
+        /// <summary>Fallback outcome metadata, or null when no fallback path ran.</summary>
+        public FallbackStatus? FallbackStatus { get; private set; }
+
+        /// <summary>The handler exception when its outcome may be ambiguous; never replaces this exception.</summary>
+        public Exception FallbackError { get; private set; }
+
         public M2CCheckoutException(M2CErrorCode code, string message, int httpStatus = 0, int retryAfter = 0)
             : base(message)
         {
             Code = code;
             HttpStatus = httpStatus;
             RetryAfter = retryAfter;
+        }
+
+        internal void AttachFallback(FallbackStatus status, Exception fallbackError = null)
+        {
+            FallbackStatus = status;
+            FallbackError = fallbackError;
         }
     }
 }

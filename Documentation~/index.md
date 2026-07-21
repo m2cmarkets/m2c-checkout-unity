@@ -46,6 +46,10 @@ running. `Popup` mode pre-opens a blank popup before async auction creation, the
 navigates it to the hosted checkout URL. `WebGL Launch Mode` is a browser hint;
 the browser may still choose a tab, popup window, or mobile tab sheet.
 
+Client-initiated integrations may opt into the merchant-owned native billing
+fallback documented in the full README. It runs only before vendor checkout
+exposure and never treats fallback acceptance as payment success.
+
 Standalone desktop player builds are disabled for now; use the Unity Editor,
 iOS, Android, or WebGL.
 

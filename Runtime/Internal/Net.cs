@@ -1,5 +1,6 @@
 using System;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine.Networking;
 
@@ -74,10 +75,18 @@ namespace M2C.Checkout.Internal
             _publishableKey = publishableKey;
         }
 
-        public async Task<AuctionResult> CreateAuctionAsync(AuctionRequest req)
+        public async Task<AuctionResult> CreateAuctionAsync(
+            AuctionRequest req,
+            int timeoutSeconds = DefaultHttpTimeoutSeconds,
+            CancellationToken cancellationToken = default(CancellationToken))
         {
             string body = BuildAuctionBody(req);
-            HttpResponse res = await Http.PostJsonAsync(_baseUrl + "/api/v1/auction", body, _publishableKey, DefaultHttpTimeoutSeconds);
+            HttpResponse res = await Http.PostJsonAsync(
+                _baseUrl + "/api/v1/auction",
+                body,
+                _publishableKey,
+                timeoutSeconds,
+                cancellationToken);
             if (!res.TransportOk)
                 throw new M2CCheckoutException(M2CErrorCode.Network, res.TransportError ?? "network error");
             if (res.Status < 200 || res.Status >= 300)
@@ -241,7 +250,12 @@ namespace M2C.Checkout.Internal
 
     internal static class Http
     {
-        public static async Task<HttpResponse> PostJsonAsync(string url, string body, string apiKey, int timeoutSeconds = 0)
+        public static async Task<HttpResponse> PostJsonAsync(
+            string url,
+            string body,
+            string apiKey,
+            int timeoutSeconds = 0,
+            CancellationToken cancellationToken = default(CancellationToken))
         {
             using (var req = new UnityWebRequest(url, "POST"))
             {
@@ -250,7 +264,7 @@ namespace M2C.Checkout.Internal
                 req.SetRequestHeader("Content-Type", "application/json");
                 if (!string.IsNullOrEmpty(apiKey)) req.SetRequestHeader("X-API-Key", apiKey);
                 if (timeoutSeconds > 0) req.timeout = timeoutSeconds;
-                return await SendAsync(req);
+                return await SendAsync(req, cancellationToken);
             }
         }
 
@@ -264,12 +278,16 @@ namespace M2C.Checkout.Internal
             }
         }
 
-        private static Task<HttpResponse> SendAsync(UnityWebRequest req)
+        private static Task<HttpResponse> SendAsync(
+            UnityWebRequest req,
+            CancellationToken cancellationToken = default(CancellationToken))
         {
             var tcs = new TaskCompletionSource<HttpResponse>();
+            CancellationTokenRegistration cancellationRegistration = default(CancellationTokenRegistration);
             var op = req.SendWebRequest();
             op.completed += _ =>
             {
+                cancellationRegistration.Dispose();
                 // Result is Unity 2020.2+; the package baseline is 2021.3.
                 bool transportError = req.result == UnityWebRequest.Result.ConnectionError
                                       || req.result == UnityWebRequest.Result.DataProcessingError;
@@ -282,6 +300,14 @@ namespace M2C.Checkout.Internal
                     RetryAfter = req.GetResponseHeader("Retry-After"),
                 });
             };
+            if (cancellationToken.CanBeCanceled)
+            {
+                cancellationRegistration = cancellationToken.Register(() =>
+                {
+                    try { req.Abort(); }
+                    catch (ObjectDisposedException) { }
+                });
+            }
             return tcs.Task;
         }
     }

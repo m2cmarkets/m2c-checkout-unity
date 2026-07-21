@@ -198,5 +198,19 @@ namespace M2C.Checkout
 
         /// <summary>Consult M2C only after the primary source has stayed non-terminal this long. Clamped to 5-60s from the settings asset.</summary>
         public double M2CFallbackAfterSeconds = 10.0;
+
+        /// <summary>
+        /// Optional merchant-owned native billing fallback. The handler should
+        /// return Accepted as soon as its IAP flow takes responsibility; purchase
+        /// completion remains in that flow and must not be awaited here.
+        /// </summary>
+        public CheckoutFallbackHandler FallbackHandler;
+
+        /// <summary>
+        /// Client-auction deadline used only when <see cref="FallbackHandler"/> is
+        /// enabled for the call. Must be 8,000-30,000ms; zero is valid for
+        /// session-only integrations and fails fast on the first enabled StartAsync.
+        /// </summary>
+        public int FallbackAuctionTimeoutMs;
     }
 }

@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Threading;
 using System.Threading.Tasks;
 using M2C.Checkout.Internal;
 using UnityEngine;
@@ -19,9 +20,57 @@ namespace M2C.Checkout
     {
         private readonly M2CConfig _config;
         private readonly M2CApi _api;
+        private readonly Func<AuctionRequest, int, CancellationToken, Task<AuctionResult>> _createAuction;
+        private readonly Func<double, CancellationToken, Task> _delay;
+        private readonly Func<string, ICheckoutBrowser> _createBrowser;
         private static bool _inFlight;
+        private static readonly FallbackAttempt DisabledFallbackAttempt =
+            new FallbackAttempt(null, null, default(AuctionRequest), null);
         private bool _loggedFallbackFailure;
         private const double ResumedStatusWindowSeconds = 3.0;
+        internal const int MinFallbackAuctionTimeoutMs = 8000;
+        internal const int MaxFallbackAuctionTimeoutMs = 30000;
+
+        private sealed class AuctionDeadlineReachedException : Exception
+        {
+        }
+
+        internal sealed class FallbackAttempt
+        {
+            private readonly System.Diagnostics.Stopwatch _stopwatch;
+
+            public readonly CheckoutFallbackHandler Handler;
+            public readonly string AttemptId;
+            public readonly string FallbackProductId;
+            public readonly AuctionRequest Request;
+            public string RequestId;
+            public bool LaunchedOrUnknown { get; private set; }
+            public bool Enabled => Handler != null;
+            public bool CanFallback => Enabled && !LaunchedOrUnknown;
+            public long ElapsedMilliseconds => _stopwatch != null ? _stopwatch.ElapsedMilliseconds : 0;
+
+            public FallbackAttempt(
+                CheckoutFallbackHandler handler,
+                CheckoutStartOptions options,
+                AuctionRequest request,
+                string requestId)
+            {
+                Handler = handler;
+                if (handler != null)
+                {
+                    AttemptId = Guid.NewGuid().ToString("N");
+                    _stopwatch = System.Diagnostics.Stopwatch.StartNew();
+                }
+                FallbackProductId = options != null ? options.FallbackProductId : null;
+                Request = request;
+                RequestId = requestId;
+            }
+
+            public void MarkLaunchedOrUnknown()
+            {
+                if (Enabled) LaunchedOrUnknown = true;
+            }
+        }
 
         /// <summary>Fired on the Unity main thread for every state transition.</summary>
         public event Action<CheckoutState> OnStateChanged;
@@ -35,9 +84,21 @@ namespace M2C.Checkout
         }
 
         public M2CCheckoutClient(M2CConfig config)
+            : this(config, null)
+        {
+        }
+
+        internal M2CCheckoutClient(
+            M2CConfig config,
+            Func<AuctionRequest, int, CancellationToken, Task<AuctionResult>> createAuction,
+            Func<double, CancellationToken, Task> delay = null,
+            Func<string, ICheckoutBrowser> createBrowser = null)
         {
             _config = config ?? throw new ArgumentNullException(nameof(config));
             _api = new M2CApi(_config.PublishableKey);
+            _createAuction = createAuction ?? _api.CreateAuctionAsync;
+            _delay = delay ?? ((seconds, token) => M2CScheduler.Instance.Delay(seconds, token));
+            _createBrowser = createBrowser ?? (returnUrl => CheckoutBrowserFactory.Create(_config, returnUrl));
         }
 
         /// <summary>Create a client from the project settings asset, or default config when the asset is absent.</summary>
@@ -49,17 +110,51 @@ namespace M2C.Checkout
         // --- Async surface (primary) ---
 
         /// <summary>Backend-initiated: your server ran the auction and handed you a session.</summary>
-        public async Task<CheckoutResult> StartFromSessionAsync(CheckoutSession session)
+        public Task<CheckoutResult> StartFromSessionAsync(CheckoutSession session)
+        {
+            return StartFromSessionAsync(session, null);
+        }
+
+        /// <summary>Backend-initiated checkout with per-call fallback policy and product context.</summary>
+        public async Task<CheckoutResult> StartFromSessionAsync(CheckoutSession session, CheckoutStartOptions options)
         {
             BeginFlow();
+            ICheckoutBrowser browser = null;
             try
             {
+                ValidateFallbackOptions(options, false);
                 ValidateSession(session);
                 ValidateStatusSource();
-                return await RunAsync(session.CheckoutUrl, session.RequestId, "session", _config.ReturnUrl, _config.CancelUrl);
+
+                var fallback = CreateFallbackAttempt(options, default(AuctionRequest), session.RequestId);
+                browser = CreateBrowserForReturnUrl(_config.ReturnUrl);
+                if (fallback.Enabled)
+                {
+                    try
+                    {
+                        PrepareLaunchIfSupported(browser);
+                    }
+                    catch (CheckoutPreparationException e)
+                    {
+                        return await CompleteFallbackAsync(
+                            fallback,
+                            FallbackReason.LaunchFailed,
+                            e.CheckoutError,
+                            browser);
+                    }
+                }
+                return await RunAsync(
+                    session.CheckoutUrl,
+                    session.RequestId,
+                    "session",
+                    _config.ReturnUrl,
+                    _config.CancelUrl,
+                    browser,
+                    fallback);
             }
             catch
             {
+                CancelPreparedLaunch(browser);
                 if (State != CheckoutState.Error) SetState(CheckoutState.Error);
                 throw;
             }
@@ -70,25 +165,88 @@ namespace M2C.Checkout
         }
 
         /// <summary>Client-initiated (publishable key): the SDK runs the auction itself.</summary>
-        public async Task<CheckoutResult> StartAsync(AuctionRequest request)
+        public Task<CheckoutResult> StartAsync(AuctionRequest request)
+        {
+            return StartAsync(request, null);
+        }
+
+        /// <summary>Client-initiated checkout with per-call fallback policy and product context.</summary>
+        public async Task<CheckoutResult> StartAsync(AuctionRequest request, CheckoutStartOptions options)
         {
             BeginFlow();
             ICheckoutBrowser browser = null;
             IDisposable runtimeScope = null;
             try
             {
+                ValidateFallbackOptions(options, true);
                 if (string.IsNullOrEmpty(_config.PublishableKey))
                     throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, MissingPublishableKeyMessage());
                 ValidateStatusSource();
 
                 ApplyClientInitiatedDefaults(ref request);
+                var fallback = CreateFallbackAttempt(options, request, null);
                 browser = CreateBrowserForReturnUrl(request.SuccessUrl);
                 runtimeScope = EnterRuntimeScope(browser);
-                PrepareLaunchIfSupported(browser);
+                try
+                {
+                    PrepareLaunchIfSupported(browser);
+                }
+                catch (CheckoutPreparationException e)
+                {
+                    if (!fallback.Enabled) throw e.CheckoutError;
+                    return await CompleteFallbackAsync(
+                        fallback,
+                        FallbackReason.LaunchFailed,
+                        e.CheckoutError,
+                        browser);
+                }
 
                 SetState(CheckoutState.Creating);
-                AuctionResult auction = await _api.CreateAuctionAsync(request);
-                return await RunAsync(auction.CheckoutUrl, auction.RequestId, "client", request.SuccessUrl, request.CancelUrl, browser);
+                AuctionResult auction;
+                try
+                {
+                    auction = fallback.Enabled
+                        ? await CreateAuctionWithinFallbackDeadlineAsync(request)
+                        : await _createAuction(request, M2CApi.DefaultHttpTimeoutSeconds, CancellationToken.None);
+                }
+                catch (AuctionDeadlineReachedException)
+                {
+                    return await CompleteFallbackAsync(
+                        fallback,
+                        FallbackReason.Timeout,
+                        new M2CCheckoutException(M2CErrorCode.Network, "auction request timed out"),
+                        browser);
+                }
+                catch (Exception e)
+                {
+                    var original = AsCheckoutException(e);
+                    FallbackReason reason;
+                    if (!fallback.Enabled || !TryClassifyAuctionFailure(original, out reason)) throw;
+                    return await CompleteFallbackAsync(fallback, reason, original, browser);
+                }
+
+                if (fallback.Enabled) fallback.RequestId = auction.RequestId;
+                if (!IsValidCheckoutUrl(auction.CheckoutUrl))
+                {
+                    var invalidUrl = new M2CCheckoutException(
+                        M2CErrorCode.Unknown,
+                        "auction response contained an invalid checkout URL");
+                    if (!fallback.Enabled) throw invalidUrl;
+                    return await CompleteFallbackAsync(
+                        fallback,
+                        FallbackReason.ApiError,
+                        invalidUrl,
+                        browser);
+                }
+
+                return await RunAsync(
+                    auction.CheckoutUrl,
+                    auction.RequestId,
+                    "client",
+                    request.SuccessUrl,
+                    request.CancelUrl,
+                    browser,
+                    fallback);
             }
             catch
             {
@@ -102,7 +260,6 @@ namespace M2C.Checkout
                 _inFlight = false;
             }
         }
-
         /// <summary>
         /// Resume a checkout whose process was killed mid-flight (cold start). Call
         /// once on startup; returns null if nothing was pending, otherwise resumes the
@@ -151,7 +308,14 @@ namespace M2C.Checkout
             return ResolveStatusWithinBudgetAsync(requestId, null, M2CApi.DefaultHttpTimeoutSeconds);
         }
 
-        private async Task<CheckoutResult> RunAsync(string checkoutUrl, string requestId, string mode, string returnUrl, string cancelUrl, ICheckoutBrowser preparedBrowser = null)
+        private async Task<CheckoutResult> RunAsync(
+            string checkoutUrl,
+            string requestId,
+            string mode,
+            string returnUrl,
+            string cancelUrl,
+            ICheckoutBrowser preparedBrowser,
+            FallbackAttempt fallback)
         {
             if (string.IsNullOrEmpty(checkoutUrl) || string.IsNullOrEmpty(requestId))
             {
@@ -161,26 +325,105 @@ namespace M2C.Checkout
 
             ICheckoutBrowser browser = preparedBrowser ?? CreateBrowserForReturnUrl(returnUrl);
             IDisposable runtimeScope = EnterRuntimeScope(browser);
+            if (fallback.Enabled) fallback.RequestId = requestId;
 
             try
             {
                 SetState(CheckoutState.Ready);
-                ResumeStore.Save(requestId, mode, _config.StatusSource);
+                if (!fallback.Enabled)
+                {
+                    ResumeStore.Save(requestId, mode, _config.StatusSource);
+                }
                 SetState(CheckoutState.Launching);
-                SetState(CheckoutState.AwaitingReturn);
+                if (!fallback.Enabled)
+                {
+                    SetState(CheckoutState.AwaitingReturn);
+                }
 
-                BrowserOutcome outcome;
+                Task<BrowserOutcome> launchTask;
                 try
                 {
                     var requestContext = browser as ICheckoutBrowserRequestContext;
                     if (requestContext != null) requestContext.SetRequestId(requestId);
-                    outcome = await browser.LaunchAsync(checkoutUrl, returnUrl, cancelUrl);
+                    launchTask = browser.LaunchAsync(checkoutUrl, returnUrl, cancelUrl);
                 }
                 catch (Exception e)
                 {
-                    ResumeStore.Clear();
+                    fallback.MarkLaunchedOrUnknown();
+                    if (!fallback.Enabled) ResumeStore.Clear();
                     SetState(CheckoutState.Error);
-                    throw e is M2CCheckoutException ? e : new M2CCheckoutException(M2CErrorCode.Unknown, e.Message);
+                    throw AsCheckoutException(e);
+                }
+
+                BrowserOutcome outcome = default(BrowserOutcome);
+                bool outcomeReady = launchTask.IsCompleted;
+                if (outcomeReady)
+                {
+                    try
+                    {
+                        outcome = await launchTask;
+                    }
+                    catch (Exception e)
+                    {
+                        fallback.MarkLaunchedOrUnknown();
+                        if (!fallback.Enabled) ResumeStore.Clear();
+                        SetState(CheckoutState.Error);
+                        throw AsCheckoutException(e);
+                    }
+
+                    if (outcome.Result == BrowserResult.PreparedLaunchFailed && fallback.Enabled)
+                    {
+                        return await CompleteFallbackAsync(
+                            fallback,
+                            FallbackReason.LaunchFailed,
+                            new M2CCheckoutException(
+                                M2CErrorCode.Unknown,
+                                "the prepared checkout window closed before vendor navigation"),
+                            browser);
+                    }
+                }
+
+                // LaunchAsync performs the platform launch synchronously before it
+                // returns its outcome task. Once that call returns without the
+                // explicit prepared-window failure above, exposure is possible and
+                // the per-invocation latch can never move backward.
+                fallback.MarkLaunchedOrUnknown();
+                if (fallback.Enabled)
+                {
+                    ResumeStore.Save(requestId, mode, _config.StatusSource);
+                    SetState(CheckoutState.AwaitingReturn);
+                }
+
+                if (!outcomeReady)
+                {
+                    try
+                    {
+                        outcome = await launchTask;
+                    }
+                    catch (Exception e)
+                    {
+                        ResumeStore.Clear();
+                        SetState(CheckoutState.Error);
+                        throw AsCheckoutException(e);
+                    }
+                }
+
+                if (outcome.Result == BrowserResult.PreparedLaunchFailed)
+                {
+                    if (!fallback.Enabled)
+                    {
+                        // Preserve the default-off behavior that previously surfaced
+                        // this internal WebGL signal as a browser cancellation.
+                        outcome = BrowserOutcome.Canceled;
+                    }
+                    else
+                    {
+                        ResumeStore.Clear();
+                        SetState(CheckoutState.Error);
+                        throw new M2CCheckoutException(
+                            M2CErrorCode.Unknown,
+                            "checkout launch failed after the exposure boundary");
+                    }
                 }
 
                 // Launched: a surface that polls for its outcome over the full window (the
@@ -240,10 +483,9 @@ namespace M2C.Checkout
                 runtimeScope?.Dispose();
             }
         }
-
         private ICheckoutBrowser CreateBrowserForReturnUrl(string returnUrl)
         {
-            ICheckoutBrowser browser = CheckoutBrowserFactory.Create(_config, returnUrl);
+            ICheckoutBrowser browser = _createBrowser(returnUrl);
             if (browser.RequiresReturnUrl && string.IsNullOrEmpty(returnUrl))
                 throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, MissingReturnUrlMessage());
             return browser;
@@ -502,6 +744,8 @@ namespace M2C.Checkout
                     return CheckoutState.Failed;
                 case CheckoutOutcome.Canceled:
                     return CheckoutState.Canceled;
+                case CheckoutOutcome.FallbackStarted:
+                    return CheckoutState.FallbackStarted;
                 default:
                     return CheckoutState.PendingTimeout;
             }
@@ -579,6 +823,156 @@ namespace M2C.Checkout
             }, TaskContinuationOptions.OnlyOnFaulted);
         }
 
+        private void ValidateFallbackOptions(CheckoutStartOptions options, bool clientInitiated)
+        {
+            var mode = options != null ? options.FallbackMode : FallbackMode.Inherit;
+            if (mode != FallbackMode.Inherit && mode != FallbackMode.Disabled)
+                throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "invalid fallback mode");
+            if (!clientInitiated || mode == FallbackMode.Disabled || _config.FallbackHandler == null)
+                return;
+            if (_config.FallbackAuctionTimeoutMs < MinFallbackAuctionTimeoutMs ||
+                _config.FallbackAuctionTimeoutMs > MaxFallbackAuctionTimeoutMs)
+            {
+                throw new M2CCheckoutException(
+                    M2CErrorCode.InvalidRequest,
+                    "fallback auction timeout must be between 8000 and 30000 milliseconds");
+            }
+        }
+
+        private FallbackAttempt CreateFallbackAttempt(
+            CheckoutStartOptions options,
+            AuctionRequest request,
+            string requestId)
+        {
+            var mode = options != null ? options.FallbackMode : FallbackMode.Inherit;
+            var handler = mode == FallbackMode.Disabled ? null : _config.FallbackHandler;
+            return handler == null
+                ? DisabledFallbackAttempt
+                : new FallbackAttempt(handler, options, request, requestId);
+        }
+
+        private async Task<AuctionResult> CreateAuctionWithinFallbackDeadlineAsync(AuctionRequest request)
+        {
+            using (var cancellation = new CancellationTokenSource())
+            using (var deadlineCancellation = new CancellationTokenSource())
+            {
+                Task<AuctionResult> auctionTask = _createAuction(request, 0, cancellation.Token);
+                if (auctionTask.IsCompleted)
+                    return await auctionTask;
+
+                Task deadlineTask = _delay(
+                    _config.FallbackAuctionTimeoutMs / 1000.0,
+                    deadlineCancellation.Token);
+                Task winner = await Task.WhenAny(auctionTask, deadlineTask);
+                if (winner == auctionTask || auctionTask.IsCompleted)
+                {
+                    deadlineCancellation.Cancel();
+                    return await auctionTask;
+                }
+
+                cancellation.Cancel();
+                try { await auctionTask; }
+                catch { /* Observe the aborted request; the deadline remains authoritative. */ }
+                throw new AuctionDeadlineReachedException();
+            }
+        }
+
+        private async Task<CheckoutResult> CompleteFallbackAsync(
+            FallbackAttempt attempt,
+            FallbackReason reason,
+            M2CCheckoutException original,
+            ICheckoutBrowser preparedBrowser)
+        {
+            if (attempt == null || !attempt.CanFallback)
+            {
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(original).Throw();
+                return null;
+            }
+
+            // Close the blank checkout surface before merchant code can present IAP.
+            CancelPreparedLaunch(preparedBrowser);
+            var context = new FallbackContext
+            {
+                AttemptId = attempt.AttemptId,
+                Reason = reason,
+                OriginalError = original,
+                RequestId = attempt.RequestId,
+                FallbackProductId = attempt.FallbackProductId,
+                LatencyMs = attempt.ElapsedMilliseconds,
+                TransactionValue = attempt.Request.TransactionValue,
+                Currency = attempt.Request.Currency,
+                Description = attempt.Request.Description,
+                Reference = attempt.Request.Reference
+            };
+
+            FallbackDecision decision;
+            try
+            {
+                decision = await attempt.Handler(reason, context);
+            }
+            catch (Exception handlerError)
+            {
+                original.AttachFallback(FallbackStatus.HandlerOutcomeUnknown, handlerError);
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(original).Throw();
+                return null;
+            }
+
+            if (decision == FallbackDecision.Accepted)
+            {
+                return Terminal(
+                    new CheckoutFallbackStarted(attempt.AttemptId, attempt.RequestId, reason),
+                    CheckoutState.FallbackStarted);
+            }
+            if (decision == FallbackDecision.Unavailable)
+            {
+                original.AttachFallback(FallbackStatus.Declined);
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(original).Throw();
+                return null;
+            }
+
+            original.AttachFallback(
+                FallbackStatus.HandlerOutcomeUnknown,
+                new InvalidOperationException("fallback handler returned an invalid decision"));
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(original).Throw();
+            return null;
+        }
+
+        internal static bool TryClassifyAuctionFailure(
+            M2CCheckoutException error,
+            out FallbackReason reason)
+        {
+            if (error.Code == M2CErrorCode.NoVendorsAvailable)
+            {
+                reason = FallbackReason.NoBids;
+                return true;
+            }
+            if (error.Code == M2CErrorCode.Network ||
+                error.Code == M2CErrorCode.RateLimited ||
+                error.Code == M2CErrorCode.ServiceUnavailable ||
+                (error.Code == M2CErrorCode.Unknown &&
+                 (error.HttpStatus == 0 || error.HttpStatus >= 500)))
+            {
+                reason = FallbackReason.ApiError;
+                return true;
+            }
+            reason = default(FallbackReason);
+            return false;
+        }
+
+        internal static bool IsValidCheckoutUrl(string url)
+        {
+            Uri parsed;
+            return Uri.TryCreate(url, UriKind.Absolute, out parsed) &&
+                   !string.IsNullOrEmpty(parsed.Host) &&
+                   (string.Equals(parsed.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(parsed.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static M2CCheckoutException AsCheckoutException(Exception error)
+        {
+            var checkoutError = error as M2CCheckoutException;
+            return checkoutError ?? new M2CCheckoutException(M2CErrorCode.Unknown, error.Message);
+        }
         private void BeginFlow()
         {
             if (_inFlight)
@@ -600,6 +994,8 @@ namespace M2C.Checkout
         {
             if (string.IsNullOrEmpty(session.CheckoutUrl) || string.IsNullOrEmpty(session.RequestId))
                 throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "missing checkout url or request id");
+            if (!IsValidCheckoutUrl(session.CheckoutUrl))
+                throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "checkout session contains an invalid checkout URL");
             if (session.Ttl <= 0)
                 throw new M2CCheckoutException(M2CErrorCode.CheckoutExpired, "the checkout session has expired; create a new one");
         }
@@ -713,15 +1109,15 @@ namespace M2C.Checkout
         // --- Coroutine surface (for teams avoiding async, and a familiar Unity idiom) ---
 
         /// <summary>Coroutine form of <see cref="StartFromSessionAsync"/>.</summary>
-        public IEnumerator StartFromSession(CheckoutSession session, Action<CheckoutResult> onResult = null, Action<CheckoutState> onState = null)
+        public IEnumerator StartFromSession(CheckoutSession session, Action<CheckoutResult> onResult = null, Action<CheckoutState> onState = null, CheckoutStartOptions options = null)
         {
-            return Await(() => StartFromSessionAsync(session), onResult, onState);
+            return Await(() => StartFromSessionAsync(session, options), onResult, onState);
         }
 
         /// <summary>Coroutine form of <see cref="StartAsync"/>.</summary>
-        public IEnumerator Start(AuctionRequest request, Action<CheckoutResult> onResult = null, Action<CheckoutState> onState = null)
+        public IEnumerator Start(AuctionRequest request, Action<CheckoutResult> onResult = null, Action<CheckoutState> onState = null, CheckoutStartOptions options = null)
         {
-            return Await(() => StartAsync(request), onResult, onState);
+            return Await(() => StartAsync(request, options), onResult, onState);
         }
 
         private IEnumerator Await(Func<Task<CheckoutResult>> start, Action<CheckoutResult> onResult, Action<CheckoutState> onState)

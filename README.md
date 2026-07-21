@@ -125,6 +125,59 @@ only - never auth or fulfillment - and there is no caller field for either.
 yield return client.Start(request, onResult: r => { ... }, onState: s => { ... });
 ```
 
+### Native billing fallback (opt-in)
+
+Client-initiated games can keep their existing native IAP flow available when
+M2C produces no usable checkout before any vendor page is shown. The SDK never
+calls StoreKit, Play Billing, or Unity IAP itself. Register your own handler in
+code and choose an explicit 8,000-30,000ms auction deadline (10,000ms is the
+recommended starting point):
+
+```csharp
+var config = M2CConfig.FromProjectSettings();
+config.FallbackAuctionTimeoutMs = 10_000;
+config.FallbackHandler = (reason, context) => {
+    Analytics.Record("m2c_fallback", reason.ToString(), context.AttemptId);
+    if (!NativePurchases.CanStart(context.FallbackProductId))
+        return Task.FromResult(FallbackDecision.Unavailable);
+
+    // Hand responsibility to your existing IAP flow. Do not await purchase
+    // completion here; report its success/failure through that flow.
+    NativePurchases.Start(context.FallbackProductId);
+    return Task.FromResult(FallbackDecision.Accepted);
+};
+var client = new M2CCheckoutClient(config);
+
+CheckoutResult result = await client.StartAsync(request, new CheckoutStartOptions {
+    FallbackProductId = "gems_100",
+});
+```
+
+Fallback is off when no handler is registered. Set
+`CheckoutStartOptions.FallbackMode = FallbackMode.Disabled` for a purchase that
+must fail visibly instead. Automatic fallback covers `no_bids`, the configured
+auction deadline, retryable API/transport failures, and only those launch
+failures that prove the vendor checkout was never exposed. It is permanently
+forbidden once launch may have occurred, so a return, close, or post-launch
+exception never silently opens native billing.
+
+`CheckoutFallbackStarted` / `CheckoutOutcome.FallbackStarted` means only that
+your handler accepted responsibility. It is not payment success and must never
+grant entitlement. `RequestId` may be null; `AttemptId` is always present for
+analytics correlation. The game's IAP result remains the authority.
+
+If the handler declines, the original `M2CCheckoutException` is rethrown with
+`FallbackStatus.Declined`. If the handler throws, the original exception remains
+authoritative with `FallbackStatus.HandlerOutcomeUnknown` and `FallbackError`
+attached. Do not automatically retry M2C or native billing in that ambiguous
+case because the handler may already have presented the store surface.
+
+`StartFromSessionAsync` can use the same handler for a definitely-not-launched
+launch failure without configuring an auction timeout. A backend auction
+failure never reaches that method: signal the app and call the same merchant IAP
+code directly. There is intentionally no public SDK method that lets a backend
+assert that an unrelated checkout was never launched.
+
 ### Handling the result
 
 ```csharp
@@ -133,6 +186,7 @@ switch (result.Outcome) {
     case CheckoutOutcome.Failed:         /* payment failed */ break;
     case CheckoutOutcome.Canceled:       /* customer canceled */ break;
     case CheckoutOutcome.PendingTimeout: /* "we'll confirm shortly" - webhook decides */ break;
+    case CheckoutOutcome.FallbackStarted: /* native IAP owns the outcome; do not grant goods here */ break;
 }
 ```
 
@@ -302,6 +356,10 @@ SDK's contribution is:
 | Google: Data collected - Financial info (purchase history) | Yes - amount/currency, ephemeral processing for the transaction |
 | Google: Data collected - Location (approximate) | Yes - IP-derived country, server-side only |
 | Google: Data shared | Transaction context is forwarded to the bidding payment vendors to price the checkout (service-provider processing, not advertising) |
+
+A fallback purchase is your game's existing native IAP flow and remains covered
+by your game's own store-product, payment, and privacy declarations; it does not
+change the SDK's table above.
 
 Your game's own data practices (and any other SDKs) are declared separately;
 the table covers only what this package adds.

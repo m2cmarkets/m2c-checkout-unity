@@ -60,7 +60,7 @@ namespace M2C.Checkout
         {
             if (_launchMode != M2CWebGLLaunchMode.Popup) return;
             if (M2CCheckoutPrepare(LaunchModeCode(_launchMode)) == 0)
-                throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "checkout window was blocked; allow popups for this site and try again");
+                throw new CheckoutPreparationException(new M2CCheckoutException(M2CErrorCode.InvalidRequest, "checkout window was blocked; allow popups for this site and try again"));
         }
 
         public void CancelPreparedLaunch()
@@ -109,9 +109,9 @@ namespace M2C.Checkout
             if (url == PreparedClosed)
             {
                 // The customer closed the pre-opened blank surface before checkout
-                // could be navigated there. No vendor page ran, so this is a real
-                // browser cancel rather than an ambiguous post-checkout close.
-                tcs.TrySetResult(BrowserOutcome.Canceled);
+                // could be navigated there. Preserve that proof separately from
+                // every post-launch cancel/close outcome.
+                tcs.TrySetResult(BrowserOutcome.PreparedLaunchFailed);
                 return;
             }
             if (url == StatusOnly)

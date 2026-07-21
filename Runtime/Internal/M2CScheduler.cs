@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
 
@@ -54,6 +55,13 @@ namespace M2C.Checkout.Internal
             return tcs.Task;
         }
 
+        public Task Delay(double seconds, CancellationToken cancellationToken)
+        {
+            var tcs = new TaskCompletionSource<bool>();
+            StartCoroutine(CancellableDelayRoutine(seconds, cancellationToken, tcs));
+            return tcs.Task;
+        }
+
         /// <summary>Invoke an action on the main thread after a real-time delay.</summary>
         public void DelayThen(double seconds, Action action)
         {
@@ -73,6 +81,32 @@ namespace M2C.Checkout.Internal
         {
             if (seconds > 0) yield return new WaitForSecondsRealtime((float)seconds);
             tcs.TrySetResult(true);
+        }
+
+        private static IEnumerator CancellableDelayRoutine(
+            double seconds,
+            CancellationToken cancellationToken,
+            TaskCompletionSource<bool> tcs)
+        {
+            if (seconds <= 0)
+            {
+                if (cancellationToken.IsCancellationRequested) tcs.TrySetCanceled();
+                else tcs.TrySetResult(true);
+                yield break;
+            }
+
+            float deadline = Time.realtimeSinceStartup + (float)seconds;
+            while (Time.realtimeSinceStartup < deadline)
+            {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    tcs.TrySetCanceled();
+                    yield break;
+                }
+                yield return null;
+            }
+            if (cancellationToken.IsCancellationRequested) tcs.TrySetCanceled();
+            else tcs.TrySetResult(true);
         }
 
         private static IEnumerator DelayThenRoutine(double seconds, Action action)

@@ -1,4 +1,7 @@
 using System;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 using M2C.Checkout;
 using M2C.Checkout.Internal;
 using NUnit.Framework;
@@ -553,6 +556,553 @@ namespace M2C.Checkout.Tests
             {
                 UnityEngine.Object.DestroyImmediate(settings);
             }
+        }
+    }
+    public class NativeFallbackTests
+    {
+        private static readonly AuctionRequest Request = new AuctionRequest
+        {
+            TransactionValue = 4.99,
+            Currency = "USD",
+            Description = "coins",
+            Reference = "order-123",
+            SuccessUrl = "mygame://checkout/return",
+            CancelUrl = "mygame://checkout/cancel"
+        };
+
+        [Test]
+        public async Task Accepted_fallback_is_terminal_without_error_state()
+        {
+            int calls = 0;
+            FallbackContext seen = null;
+            var config = Config(async (reason, context) =>
+            {
+                calls++;
+                seen = context;
+                await Task.Yield();
+                return FallbackDecision.Accepted;
+            });
+            var original = new M2CCheckoutException(M2CErrorCode.NoVendorsAvailable, "no bids", 404);
+            var client = Client(config, (_, __, ___) => Task.FromException<AuctionResult>(original));
+            var states = new List<CheckoutState>();
+            client.OnStateChanged += states.Add;
+
+            CheckoutResult result = await client.StartAsync(Request, new CheckoutStartOptions
+            {
+                FallbackProductId = "coins_5"
+            });
+
+            var fallback = result as CheckoutFallbackStarted;
+            Assert.NotNull(fallback);
+            Assert.AreEqual(CheckoutOutcome.FallbackStarted, fallback.Outcome);
+            Assert.AreEqual(FallbackReason.NoBids, fallback.Reason);
+            Assert.IsFalse(string.IsNullOrEmpty(fallback.AttemptId));
+            Assert.IsNull(fallback.RequestId);
+            Assert.AreEqual(1, calls);
+            Assert.AreSame(original, seen.OriginalError);
+            Assert.AreEqual("coins_5", seen.FallbackProductId);
+            Assert.AreEqual(Request.TransactionValue, seen.TransactionValue);
+            Assert.AreEqual(Request.Reference, seen.Reference);
+            CollectionAssert.DoesNotContain(states, CheckoutState.Error);
+            Assert.AreEqual(CheckoutState.FallbackStarted, client.State);
+        }
+
+        [Test]
+        public void Declined_fallback_rethrows_the_original_exception()
+        {
+            var original = new M2CCheckoutException(M2CErrorCode.ServiceUnavailable, "down", 503);
+            var config = Config((_, __) => Task.FromResult(FallbackDecision.Unavailable));
+            var client = Client(config, (_, __, ___) => Task.FromException<AuctionResult>(original));
+
+            var thrown = Assert.ThrowsAsync<M2CCheckoutException>(async () => await client.StartAsync(Request));
+
+            Assert.AreSame(original, thrown);
+            Assert.AreEqual(FallbackStatus.Declined, thrown.FallbackStatus);
+            Assert.AreEqual(CheckoutState.Error, client.State);
+        }
+
+        [Test]
+        public void Handler_failure_keeps_original_authoritative_and_marks_outcome_unknown()
+        {
+            var original = new M2CCheckoutException(M2CErrorCode.Network, "offline");
+            var handlerError = new InvalidOperationException("IAP launch failed");
+            var config = Config((_, __) => Task.FromException<FallbackDecision>(handlerError));
+            var client = Client(config, (_, __, ___) => Task.FromException<AuctionResult>(original));
+
+            var thrown = Assert.ThrowsAsync<M2CCheckoutException>(async () => await client.StartAsync(Request));
+
+            Assert.AreSame(original, thrown);
+            Assert.AreEqual(FallbackStatus.HandlerOutcomeUnknown, thrown.FallbackStatus);
+            Assert.AreSame(handlerError, thrown.FallbackError);
+        }
+
+        [Test]
+        public void Per_call_disabled_preserves_the_original_error_path()
+        {
+            int handlerCalls = 0;
+            var original = new M2CCheckoutException(M2CErrorCode.NoVendorsAvailable, "no bids", 404);
+            var config = Config((_, __) =>
+            {
+                handlerCalls++;
+                return Task.FromResult(FallbackDecision.Accepted);
+            });
+            int timeoutSeconds = 0;
+            var client = Client(config, (_, timeout, ___) =>
+            {
+                timeoutSeconds = timeout;
+                return Task.FromException<AuctionResult>(original);
+            });
+
+            var thrown = Assert.ThrowsAsync<M2CCheckoutException>(async () =>
+                await client.StartAsync(Request, new CheckoutStartOptions { FallbackMode = FallbackMode.Disabled }));
+
+            Assert.AreSame(original, thrown);
+            Assert.IsNull(thrown.FallbackStatus);
+            Assert.AreEqual(0, handlerCalls);
+            Assert.AreEqual(M2CApi.DefaultHttpTimeoutSeconds, timeoutSeconds);
+        }
+
+        [TestCase(7999)]
+        [TestCase(30001)]
+        public void Fallback_auction_timeout_outside_bounds_fails_before_the_request(int timeoutMs)
+        {
+            int auctionCalls = 0;
+            var config = Config((_, __) => Task.FromResult(FallbackDecision.Accepted));
+            config.FallbackAuctionTimeoutMs = timeoutMs;
+            var client = Client(config, (_, __, ___) =>
+            {
+                auctionCalls++;
+                return Task.FromResult(new AuctionResult());
+            });
+
+            var thrown = Assert.ThrowsAsync<M2CCheckoutException>(async () => await client.StartAsync(Request));
+
+            Assert.AreEqual(M2CErrorCode.InvalidRequest, thrown.Code);
+            Assert.AreEqual(0, auctionCalls);
+        }
+
+        [Test]
+        public void Invalid_backend_session_url_is_a_contract_error_without_fallback()
+        {
+            int handlerCalls = 0;
+            var config = Config((_, __) =>
+            {
+                handlerCalls++;
+                return Task.FromResult(FallbackDecision.Accepted);
+            });
+            var client = Client(config, (_, __, ___) => Task.FromResult(new AuctionResult()));
+
+            var thrown = Assert.ThrowsAsync<M2CCheckoutException>(async () =>
+                await client.StartFromSessionAsync(new CheckoutSession
+                {
+                    CheckoutUrl = "javascript:alert(1)",
+                    RequestId = "req_123",
+                    Ttl = 60
+                }));
+
+            Assert.AreEqual(M2CErrorCode.InvalidRequest, thrown.Code);
+            Assert.AreEqual(0, handlerCalls);
+        }
+
+        [Test]
+        public async Task Deadline_aborts_and_observes_the_request_before_fallback()
+        {
+            bool requestCanceled = false;
+            var requestTask = new TaskCompletionSource<AuctionResult>();
+            var config = Config((_, __) => Task.FromResult(FallbackDecision.Accepted));
+            var client = new M2CCheckoutClient(
+                config,
+                (_, __, token) =>
+                {
+                    token.Register(() =>
+                    {
+                        requestCanceled = true;
+                        requestTask.TrySetCanceled();
+                    });
+                    return requestTask.Task;
+                },
+                (_, __) => Task.FromResult(true));
+
+            CheckoutResult result = await client.StartAsync(Request);
+
+            Assert.IsTrue(requestCanceled);
+            Assert.AreEqual(CheckoutOutcome.FallbackStarted, result.Outcome);
+            Assert.AreEqual(FallbackReason.Timeout, ((CheckoutFallbackStarted)result).Reason);
+        }
+
+        [Test]
+        public async Task Invalid_client_auction_checkout_url_is_an_api_fallback()
+        {
+            FallbackReason seen = default(FallbackReason);
+            var config = Config((reason, _) =>
+            {
+                seen = reason;
+                return Task.FromResult(FallbackDecision.Accepted);
+            });
+            var client = Client(config, (_, __, ___) => Task.FromResult(new AuctionResult
+            {
+                CheckoutUrl = "javascript:alert(1)",
+                RequestId = "req_bad_url"
+            }));
+
+            CheckoutResult result = await client.StartAsync(Request);
+
+            Assert.AreEqual(CheckoutOutcome.FallbackStarted, result.Outcome);
+            Assert.AreEqual(FallbackReason.ApiError, seen);
+        }
+
+        [Test]
+        public void No_handler_keeps_the_existing_error_path_without_requiring_a_timeout()
+        {
+            var original = new M2CCheckoutException(M2CErrorCode.NoVendorsAvailable, "no bids", 404);
+            var config = new M2CConfig
+            {
+                PublishableKey = "pub_test_example",
+                ReturnUrl = Request.SuccessUrl,
+                CancelUrl = Request.CancelUrl
+            };
+            int timeoutSeconds = 0;
+            var client = Client(config, (_, timeout, ___) =>
+            {
+                timeoutSeconds = timeout;
+                return Task.FromException<AuctionResult>(original);
+            });
+
+            var thrown = Assert.ThrowsAsync<M2CCheckoutException>(async () => await client.StartAsync(Request));
+
+            Assert.AreSame(original, thrown);
+            Assert.IsNull(thrown.FallbackStatus);
+            Assert.AreEqual(M2CApi.DefaultHttpTimeoutSeconds, timeoutSeconds);
+        }
+
+        [Test]
+        public void Trigger_classification_excludes_auth_and_configuration_errors()
+        {
+            FallbackReason reason;
+            Assert.IsTrue(M2CCheckoutClient.TryClassifyAuctionFailure(
+                new M2CCheckoutException(M2CErrorCode.NoVendorsAvailable, "none", 404), out reason));
+            Assert.AreEqual(FallbackReason.NoBids, reason);
+            Assert.IsTrue(M2CCheckoutClient.TryClassifyAuctionFailure(
+                new M2CCheckoutException(M2CErrorCode.RateLimited, "slow", 429), out reason));
+            Assert.AreEqual(FallbackReason.ApiError, reason);
+            Assert.IsFalse(M2CCheckoutClient.TryClassifyAuctionFailure(
+                new M2CCheckoutException(M2CErrorCode.Unknown, "unauthorized", 401), out reason));
+            Assert.IsFalse(M2CCheckoutClient.TryClassifyAuctionFailure(
+                new M2CCheckoutException(M2CErrorCode.InvalidRequest, "bad input", 400), out reason));
+        }
+
+        [Test]
+        public void Launch_latch_is_per_attempt_and_one_way()
+        {
+            CheckoutFallbackHandler handler = (_, __) => Task.FromResult(FallbackDecision.Accepted);
+            var first = new M2CCheckoutClient.FallbackAttempt(handler, null, Request, null);
+            Assert.IsTrue(first.CanFallback);
+            first.MarkLaunchedOrUnknown();
+            first.MarkLaunchedOrUnknown();
+            Assert.IsFalse(first.CanFallback);
+
+            var second = new M2CCheckoutClient.FallbackAttempt(handler, null, Request, null);
+            Assert.IsTrue(second.CanFallback);
+        }
+
+        [TestCase("https://vendor.example/checkout", true)]
+        [TestCase("http://localhost:8090/checkout", true)]
+        [TestCase("javascript:alert(1)", false)]
+        [TestCase("/relative", false)]
+        [TestCase("https:///missing-host", false)]
+        public void Checkout_url_validation_is_http_only(string url, bool expected)
+        {
+            Assert.AreEqual(expected, M2CCheckoutClient.IsValidCheckoutUrl(url));
+        }
+
+        [Test]
+        public async Task Session_fallback_does_not_require_an_auction_timeout()
+        {
+            int handlerCalls = 0;
+            var config = Config((_, __) =>
+            {
+                handlerCalls++;
+                return Task.FromResult(FallbackDecision.Accepted);
+            });
+            config.FallbackAuctionTimeoutMs = 0;
+            var browser = new FallbackTestBrowser
+            {
+                PreparationError = new CheckoutPreparationException(
+                    new M2CCheckoutException(M2CErrorCode.InvalidRequest, "checkout window was blocked"))
+            };
+            var client = Client(
+                config,
+                (_, __, ___) => Task.FromResult(new AuctionResult()),
+                createBrowser: _ => browser);
+
+            CheckoutResult result = await client.StartFromSessionAsync(ValidSession());
+
+            Assert.AreEqual(CheckoutOutcome.FallbackStarted, result.Outcome);
+            Assert.AreEqual(FallbackReason.LaunchFailed, ((CheckoutFallbackStarted)result).Reason);
+            Assert.AreEqual(1, handlerCalls);
+        }
+
+        [Test]
+        public void Failure_after_launch_boundary_never_invokes_fallback()
+        {
+            int handlerCalls = 0;
+            var original = new M2CCheckoutException(M2CErrorCode.Unknown, "launch outcome failed");
+            var launch = new TaskCompletionSource<BrowserOutcome>();
+            var config = Config((_, __) =>
+            {
+                handlerCalls++;
+                return Task.FromResult(FallbackDecision.Accepted);
+            });
+            var browser = new FallbackTestBrowser { LaunchTask = launch.Task };
+            var client = Client(
+                config,
+                (_, __, ___) => Task.FromResult(new AuctionResult()),
+                createBrowser: _ => browser);
+
+            Task<CheckoutResult> checkout = client.StartFromSessionAsync(ValidSession());
+            Assert.IsFalse(checkout.IsCompleted);
+            launch.TrySetException(original);
+            var thrown = Assert.ThrowsAsync<M2CCheckoutException>(async () => await checkout);
+
+            Assert.AreSame(original, thrown);
+            Assert.AreEqual(0, handlerCalls);
+            Assert.AreEqual(CheckoutState.Error, client.State);
+        }
+
+        [Test]
+        public async Task Prelaunch_preparation_failure_defaults_to_launch_failed()
+        {
+            int handlerCalls = 0;
+            var config = Config((_, __) =>
+            {
+                handlerCalls++;
+                return Task.FromResult(FallbackDecision.Accepted);
+            });
+            var browser = new FallbackTestBrowser
+            {
+                PreparationError = new CheckoutPreparationException(
+                    new M2CCheckoutException(M2CErrorCode.InvalidRequest, "checkout window was blocked"))
+            };
+            var client = Client(
+                config,
+                (_, __, ___) => Task.FromResult(new AuctionResult()),
+                createBrowser: _ => browser);
+
+            CheckoutResult result = await client.StartAsync(Request);
+
+            Assert.AreEqual(CheckoutOutcome.FallbackStarted, result.Outcome);
+            Assert.AreEqual(FallbackReason.LaunchFailed, ((CheckoutFallbackStarted)result).Reason);
+            Assert.AreEqual(1, handlerCalls);
+        }
+
+        [Test]
+        public async Task Prepared_window_closed_before_navigation_can_fallback()
+        {
+            int handlerCalls = 0;
+            var config = Config((_, __) =>
+            {
+                handlerCalls++;
+                return Task.FromResult(FallbackDecision.Accepted);
+            });
+            var browser = new FallbackTestBrowser
+            {
+                LaunchTask = Task.FromResult(BrowserOutcome.PreparedLaunchFailed)
+            };
+            var client = Client(
+                config,
+                (_, __, ___) => Task.FromResult(new AuctionResult
+                {
+                    CheckoutUrl = "https://vendor.example/checkout",
+                    RequestId = "req_launch_fence"
+                }),
+                createBrowser: _ => browser);
+
+            ResumeStore.Clear();
+            var states = new List<CheckoutState>();
+            client.OnStateChanged += states.Add;
+
+            CheckoutResult result = await client.StartAsync(Request);
+
+            Assert.AreEqual(CheckoutOutcome.FallbackStarted, result.Outcome);
+            Assert.AreEqual(FallbackReason.LaunchFailed, ((CheckoutFallbackStarted)result).Reason);
+            Assert.AreEqual(1, handlerCalls);
+            Assert.IsNull(ResumeStore.PendingRecord());
+            CollectionAssert.DoesNotContain(states, CheckoutState.Polling);
+        }
+
+        private static CheckoutSession ValidSession()
+        {
+            return new CheckoutSession
+            {
+                CheckoutUrl = "https://vendor.example/checkout",
+                RequestId = "req_launch_fence",
+                Ttl = 60
+            };
+        }
+
+        private sealed class FallbackTestBrowser : ICheckoutBrowser, ICheckoutBrowserPrelauncher
+        {
+            public CheckoutPreparationException PreparationError;
+            public Task<BrowserOutcome> LaunchTask = Task.FromResult(BrowserOutcome.Launched);
+            public int CancelPreparedCalls;
+
+            public bool RequiresReturnUrl => false;
+
+            public void PrepareLaunch()
+            {
+                if (PreparationError != null) throw PreparationError;
+            }
+
+            public void CancelPreparedLaunch()
+            {
+                CancelPreparedCalls++;
+            }
+
+            public Task<BrowserOutcome> LaunchAsync(string checkoutUrl, string returnUrl, string cancelUrl)
+            {
+                return LaunchTask;
+            }
+        }
+
+        [Test]
+        public void Coroutine_wrapper_returns_fallback_started()
+        {
+            CheckoutResult seen = null;
+            var original = new M2CCheckoutException(M2CErrorCode.NoVendorsAvailable, "no bids", 404);
+            var config = Config((_, __) => Task.FromResult(FallbackDecision.Accepted));
+            var client = Client(config, (_, __, ___) => Task.FromException<AuctionResult>(original));
+
+            var routine = client.Start(Request, onResult: result => seen = result);
+            while (routine.MoveNext()) { }
+
+            Assert.NotNull(seen);
+            Assert.AreEqual(CheckoutOutcome.FallbackStarted, seen.Outcome);
+        }
+
+        [Test]
+        public async Task Auction_winner_cancels_deadline_without_invoking_fallback()
+        {
+            int handlerCalls = 0;
+            bool deadlineCanceled = false;
+            var auction = new TaskCompletionSource<AuctionResult>();
+            var deadline = new TaskCompletionSource<bool>();
+            var config = Config((_, __) =>
+            {
+                handlerCalls++;
+                return Task.FromResult(FallbackDecision.Accepted);
+            });
+            var browser = new FallbackTestBrowser { LaunchTask = Task.FromResult(BrowserOutcome.Dismissed) };
+            var client = Client(
+                config,
+                (_, __, ___) => auction.Task,
+                (_, token) =>
+                {
+                    token.Register(() =>
+                    {
+                        deadlineCanceled = true;
+                        deadline.TrySetCanceled();
+                    });
+                    return deadline.Task;
+                },
+                _ => browser);
+
+            Task<CheckoutResult> checkout = client.StartAsync(Request);
+            Assert.IsFalse(checkout.IsCompleted);
+            auction.TrySetResult(ValidAuction());
+            CheckoutResult result = await checkout;
+
+            Assert.AreEqual(CheckoutOutcome.Canceled, result.Outcome);
+            Assert.IsTrue(deadlineCanceled);
+            Assert.AreEqual(0, handlerCalls);
+        }
+
+        [Test]
+        public async Task Simultaneous_auction_and_deadline_completion_prefers_the_auction()
+        {
+            int handlerCalls = 0;
+            var auction = new TaskCompletionSource<AuctionResult>();
+            var config = Config((_, __) =>
+            {
+                handlerCalls++;
+                return Task.FromResult(FallbackDecision.Accepted);
+            });
+            var browser = new FallbackTestBrowser { LaunchTask = Task.FromResult(BrowserOutcome.Dismissed) };
+            var client = Client(
+                config,
+                (_, __, ___) => auction.Task,
+                (_, __) =>
+                {
+                    auction.TrySetResult(ValidAuction());
+                    return Task.FromResult(true);
+                },
+                _ => browser);
+
+            CheckoutResult result = await client.StartAsync(Request);
+
+            Assert.AreEqual(CheckoutOutcome.Canceled, result.Outcome);
+            Assert.AreEqual(0, handlerCalls);
+        }
+
+        [Test]
+        public async Task Sequential_attempts_on_the_same_client_use_independent_launch_latches()
+        {
+            int handlerCalls = 0;
+            int browserCalls = 0;
+            var firstLaunch = new TaskCompletionSource<BrowserOutcome>();
+            var firstBrowser = new FallbackTestBrowser { LaunchTask = firstLaunch.Task };
+            var secondBrowser = new FallbackTestBrowser
+            {
+                PreparationError = new CheckoutPreparationException(
+                    new M2CCheckoutException(M2CErrorCode.InvalidRequest, "checkout window was blocked"))
+            };
+            var config = Config((_, __) =>
+            {
+                handlerCalls++;
+                return Task.FromResult(FallbackDecision.Accepted);
+            });
+            var client = Client(
+                config,
+                (_, __, ___) => Task.FromResult(ValidAuction()),
+                createBrowser: _ => browserCalls++ == 0 ? firstBrowser : secondBrowser);
+
+            Task<CheckoutResult> first = client.StartFromSessionAsync(ValidSession());
+            firstLaunch.TrySetException(new M2CCheckoutException(M2CErrorCode.Unknown, "post-launch failure"));
+            Assert.ThrowsAsync<M2CCheckoutException>(async () => await first);
+            CheckoutResult second = await client.StartFromSessionAsync(ValidSession());
+
+            Assert.AreEqual(CheckoutOutcome.FallbackStarted, second.Outcome);
+            Assert.AreEqual(1, handlerCalls);
+            Assert.AreEqual(2, browserCalls);
+        }
+
+        private static AuctionResult ValidAuction()
+        {
+            return new AuctionResult
+            {
+                CheckoutUrl = "https://vendor.example/checkout",
+                RequestId = "req_fallback_test"
+            };
+        }
+
+        private static M2CConfig Config(CheckoutFallbackHandler handler)
+        {
+            return new M2CConfig
+            {
+                PublishableKey = "pub_test_example",
+                ReturnUrl = Request.SuccessUrl,
+                CancelUrl = Request.CancelUrl,
+                FallbackHandler = handler,
+                FallbackAuctionTimeoutMs = 10000
+            };
+        }
+
+        private static M2CCheckoutClient Client(
+            M2CConfig config,
+            Func<AuctionRequest, int, CancellationToken, Task<AuctionResult>> createAuction,
+            Func<double, CancellationToken, Task> delay = null,
+            Func<string, ICheckoutBrowser> createBrowser = null)
+        {
+            return new M2CCheckoutClient(config, createAuction, delay, createBrowser);
         }
     }
 }

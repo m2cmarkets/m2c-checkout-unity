@@ -20,6 +20,11 @@ namespace M2C.Checkout
         /// </summary>
         Canceled,
         /// <summary>
+        /// A reserved blank surface became unavailable before vendor navigation.
+        /// No vendor content was exposed, so the fallback path may still run.
+        /// </summary>
+        PreparedLaunchFailed,
+        /// <summary>
         /// A browser surface closed without a return URL. The core polls status over
         /// the configured window because browser close is not payment authority.
         /// </summary>
@@ -44,6 +49,7 @@ namespace M2C.Checkout
         public static readonly BrowserOutcome Launched = new BrowserOutcome { Result = BrowserResult.Launched };
         public static readonly BrowserOutcome Dismissed = new BrowserOutcome { Result = BrowserResult.Dismissed };
         public static readonly BrowserOutcome Canceled = new BrowserOutcome { Result = BrowserResult.Canceled };
+        internal static readonly BrowserOutcome PreparedLaunchFailed = new BrowserOutcome { Result = BrowserResult.PreparedLaunchFailed };
         public static readonly BrowserOutcome Closed = new BrowserOutcome { Result = BrowserResult.Closed };
         public static readonly BrowserOutcome Resumed = new BrowserOutcome { Result = BrowserResult.Resumed };
     }
@@ -69,6 +75,16 @@ namespace M2C.Checkout
         Task<BrowserOutcome> LaunchAsync(string checkoutUrl, string returnUrl, string cancelUrl);
     }
 
+    internal sealed class CheckoutPreparationException : System.Exception
+    {
+        public M2CCheckoutException CheckoutError { get; }
+
+        public CheckoutPreparationException(M2CCheckoutException checkoutError)
+            : base(checkoutError != null ? checkoutError.Message : "checkout preparation failed", checkoutError)
+        {
+            CheckoutError = checkoutError ?? new M2CCheckoutException(M2CErrorCode.Unknown, "checkout preparation failed");
+        }
+    }
     internal interface ICheckoutBrowserPrelauncher
     {
         /// <summary>Reserve a browser surface before async work can lose the user's activation.</summary>
