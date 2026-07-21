@@ -155,6 +155,22 @@ poll your backend instead.
 `StatusPollTimeoutSeconds` in Advanced Settings controls how long the SDK polls
 before resolving `PendingTimeout`. It defaults to 90 seconds.
 
+### M2C status fallback
+
+When your own `Url`/`Callback` source is the primary, `UseM2CStatusFallback`
+(off by default; requires `PublishableKey`) also consults M2C's advisory read
+once per poll cycle after the primary has stayed non-terminal for
+`M2CFallbackAfterSeconds` - resilience for when your status endpoint is down,
+never a replacement for it. The threshold defaults to 10 seconds and the
+settings asset clamps it to 5-60; we recommend 5-15. Below ~5 seconds the
+checkout-to-webhook pipeline usually hasn't finished anyway, so an earlier
+consult mostly returns `processing` while letting a broken status integration
+pass unnoticed in testing - the clamp exists so an inspector slider can't
+quietly turn the fallback into the primary. (The JS SDK's `statusFallback`
+accepts any `afterMs` because code implies an informed choice; same
+recommendation applies.) Whatever the fallback returns is still advisory:
+fulfillment truth stays with the signed conversion webhook.
+
 ## Return setup
 
 Register the return so the vendor's redirect reaches the app:
@@ -263,3 +279,29 @@ Runner without a device.
   responses parsed with `JsonUtility` against explicit DTOs.
 - `.meta` files are checked in for stable package imports; files under `Plugins/iOS`
   and `Plugins/WebGL` are auto-assigned to their platforms by path.
+
+## Privacy & app-store disclosures
+
+The SDK is tracking-free: no advertising identifiers, no
+`SystemInfo.deviceUniqueIdentifier`, no analytics. It reads only the coarse
+device type (handheld/desktop/console) to label the checkout platform, and
+persists purchase-scoped resume state in `PlayerPrefs` (request id + mode,
+cleared when consumed). Checkout processing runs on contract necessity - the
+purchase the player is completing - so no consent UI is required for it; your
+game's own consent surface is unaffected.
+
+When filling in store privacy forms for a game that embeds this SDK, the
+SDK's contribution is:
+
+| Store question | Answer for this SDK |
+|---|---|
+| Apple: Purchases (purchase history) | Yes - transaction amount/currency sent to M2C to run the auction |
+| Apple: Location (coarse) | Yes - country derived server-side from the connection IP; the IP itself is not stored |
+| Apple: Identifiers (user/device ID) | No |
+| Apple: Usage data / tracking (ATT) | No - nothing is used for tracking across apps; no ATT prompt is needed for this SDK |
+| Google: Data collected - Financial info (purchase history) | Yes - amount/currency, ephemeral processing for the transaction |
+| Google: Data collected - Location (approximate) | Yes - IP-derived country, server-side only |
+| Google: Data shared | Transaction context is forwarded to the bidding payment vendors to price the checkout (service-provider processing, not advertising) |
+
+Your game's own data practices (and any other SDKs) are declared separately;
+the table covers only what this package adds.

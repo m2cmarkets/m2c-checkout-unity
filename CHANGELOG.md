@@ -2,6 +2,18 @@
 
 All notable changes to `com.m2c.checkout` are documented here.
 
+## [0.4.0] - 2026-07-20
+
+- Version aligned with the unified 0.4.0 release across the M2C SDK family
+  (npm `@m2c/*` packages and the OpenAPI spec now share one version). No
+  behavior changes in this package.
+- Status coercion is now conformance-checked against the shared cross-SDK
+  vector table (`sdk/kat`), so the Unity, JS, and server status projections
+  cannot drift apart silently.
+- Documented the M2C status fallback (`UseM2CStatusFallback` /
+  `M2CFallbackAfterSeconds`) in the README, including the recommended 5-15s
+  threshold and why the settings asset clamps it.
+
 ## [0.3.1] - 2026-07-13
 
 - **Breaking for WebGL return pages:** the old `window.opener.postMessage`
