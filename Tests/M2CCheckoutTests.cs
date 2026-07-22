@@ -775,6 +775,31 @@ namespace M2C.Checkout.Tests
             Assert.AreEqual(M2CApi.DefaultHttpTimeoutSeconds, timeoutSeconds);
         }
 
+        [TestCase("sec_example")]
+        [TestCase("sec_test_example")]
+        public void Client_configuration_rejects_secret_keys_before_auction_request(string secretKey)
+        {
+            int requests = 0;
+            var config = new M2CConfig
+            {
+                PublishableKey = secretKey,
+                ReturnUrl = Request.SuccessUrl,
+                CancelUrl = Request.CancelUrl
+            };
+
+            var thrown = Assert.Throws<M2CCheckoutException>(() => Client(
+                config,
+                (_, __, ___) =>
+                {
+                    requests++;
+                    return Task.FromResult(ValidAuction());
+                }));
+
+            Assert.AreEqual(M2CErrorCode.InvalidRequest, thrown.Code);
+            StringAssert.Contains("never embed a secret key", thrown.Message);
+            Assert.AreEqual(0, requests);
+        }
+
         [Test]
         public void Trigger_classification_excludes_auth_and_configuration_errors()
         {
@@ -807,10 +832,14 @@ namespace M2C.Checkout.Tests
 
         [TestCase("https://vendor.example/checkout", true)]
         [TestCase("http://localhost:8090/checkout", true)]
+        [TestCase("http://127.0.0.1:8090/checkout", true)]
+        [TestCase("http://[::1]:8090/checkout", true)]
+        [TestCase("http://vendor.example/checkout", false)]
+        [TestCase("http://10.0.0.1/checkout", false)]
         [TestCase("javascript:alert(1)", false)]
         [TestCase("/relative", false)]
         [TestCase("https:///missing-host", false)]
-        public void Checkout_url_validation_is_http_only(string url, bool expected)
+        public void Checkout_url_validation_requires_https_except_for_loopback_http(string url, bool expected)
         {
             Assert.AreEqual(expected, M2CCheckoutClient.IsValidCheckoutUrl(url));
         }

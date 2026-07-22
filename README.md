@@ -9,6 +9,8 @@ It holds no secrets beyond an optional publishable key, renders no UI (you draw
 every pixel), and never grants goods: **the merchant webhook is the source of
 truth**. The SDK's status read is advisory UX.
 
+Current checkout release: **0.5.1**, aligned with `@m2c/checkout` and `@m2c/checkout-receiver`.
+
 > **Status: beta.** The platform-agnostic core (state machine, HTTP,
 > poll/backoff, status sources, error mapping, return classification) is
 > implemented and unit-tested in the Editor. The mobile launch/return paths (the

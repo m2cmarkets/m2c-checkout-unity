@@ -131,6 +131,37 @@ mergeInto(LibraryManager.library, {
 
     requestKeyPart: function (requestId) {
       return encodeURIComponent(String(requestId || '').toLowerCase());
+    },
+
+    pruneExpiredRecords: function () {
+      try {
+        var activePrefix = 'm2c_checkout_active:';
+        var returnPrefix = 'm2c_checkout_return:';
+        var now = Date.now ? Date.now() : new Date().getTime();
+        var expired = [];
+        for (var i = 0; i < localStorage.length; i++) {
+          var key = localStorage.key(i);
+          if (!key || key.indexOf(activePrefix) !== 0) continue;
+          var remove = false;
+          try {
+            var raw = localStorage.getItem(key);
+            var record = raw ? JSON.parse(raw) : null;
+            remove = !record ||
+              typeof record.expires_at !== 'number' ||
+              !isFinite(record.expires_at) ||
+              record.expires_at <= now;
+          } catch (e) {
+            remove = true;
+          }
+          if (remove) expired.push(key);
+        }
+        for (var j = 0; j < expired.length; j++) {
+          var activeKey = expired[j];
+          var suffix = activeKey.substring(activePrefix.length);
+          localStorage.removeItem(activeKey);
+          localStorage.removeItem(returnPrefix + suffix);
+        }
+      } catch (e) {}
     }
   },
 
@@ -175,6 +206,7 @@ mergeInto(LibraryManager.library, {
     var requestId = requestIdPtr ? UTF8ToString(requestIdPtr) : '';
     var requestIdNormalized = requestId.toLowerCase();
     var state = M2CCheckoutWebGL.state();
+    M2CCheckoutWebGL.pruneExpiredRecords();
     var popup = null;
     var settled = false;
     var pollClosed = 0;

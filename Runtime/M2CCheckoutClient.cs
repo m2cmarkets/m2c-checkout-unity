@@ -95,6 +95,13 @@ namespace M2C.Checkout
             Func<string, ICheckoutBrowser> createBrowser = null)
         {
             _config = config ?? throw new ArgumentNullException(nameof(config));
+            if (!string.IsNullOrEmpty(_config.PublishableKey) &&
+                !_config.PublishableKey.StartsWith("pub_", StringComparison.Ordinal))
+            {
+                throw new M2CCheckoutException(
+                    M2CErrorCode.InvalidRequest,
+                    "PublishableKey must start with pub_ or pub_test_; never embed a secret key in a client application");
+            }
             _api = new M2CApi(_config.PublishableKey);
             _createAuction = createAuction ?? _api.CreateAuctionAsync;
             _delay = delay ?? ((seconds, token) => M2CScheduler.Instance.Delay(seconds, token));
@@ -962,10 +969,12 @@ namespace M2C.Checkout
         internal static bool IsValidCheckoutUrl(string url)
         {
             Uri parsed;
-            return Uri.TryCreate(url, UriKind.Absolute, out parsed) &&
-                   !string.IsNullOrEmpty(parsed.Host) &&
-                   (string.Equals(parsed.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(parsed.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase));
+            if (!Uri.TryCreate(url, UriKind.Absolute, out parsed) || string.IsNullOrEmpty(parsed.Host))
+                return false;
+            if (string.Equals(parsed.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+                return true;
+            return string.Equals(parsed.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
+                   parsed.IsLoopback;
         }
 
         private static M2CCheckoutException AsCheckoutException(Exception error)

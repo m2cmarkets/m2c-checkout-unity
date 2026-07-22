@@ -2,6 +2,15 @@
 
 All notable changes to `com.m2c.checkout` are documented here.
 
+## [0.5.1] - 2026-07-21
+
+- Aligned the Unity, browser, and receiver checkout SDK releases at version 0.5.1.
+- Reject secret API keys during client construction so they cannot be
+  accidentally embedded in a shipped Unity application.
+- Require HTTPS checkout URLs except for plaintext HTTP on loopback hosts.
+- Prune expired or malformed WebGL checkout records and their matching return
+  records from local storage.
+
 ## [0.5.0] - 2026-07-21
 
 - Added an opt-in, merchant-owned native billing fallback for definitely-not-launched
