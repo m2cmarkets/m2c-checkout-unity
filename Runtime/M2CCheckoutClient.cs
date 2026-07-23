@@ -966,6 +966,7 @@ namespace M2C.Checkout
             return false;
         }
 
+        // Keep the HTTPS/loopback-HTTP contract aligned with the shared SDK URL vectors.
         internal static bool IsValidCheckoutUrl(string url)
         {
             Uri parsed;

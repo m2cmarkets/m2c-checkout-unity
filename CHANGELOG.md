@@ -2,6 +2,11 @@
 
 All notable changes to `com.m2c.checkout` are documented here.
 
+## [0.5.2] - 2026-07-22
+
+- Aligned the Unity, browser, and receiver checkout SDK releases at version 0.5.2.
+- Documented the shared HTTPS and loopback-HTTP validation contract.
+
 ## [0.5.1] - 2026-07-21
 
 - Aligned the Unity, browser, and receiver checkout SDK releases at version 0.5.1.
