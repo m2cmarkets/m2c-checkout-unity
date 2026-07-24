@@ -2,6 +2,11 @@
 
 All notable changes to `com.m2c.checkout` are documented here.
 
+## [0.6.0] - 2026-07-23
+
+- Aligned the Unity, browser, and receiver checkout SDK releases at version 0.6.0.
+- No Unity runtime behavior changed in this release.
+
 ## [0.5.2] - 2026-07-22
 
 - Aligned the Unity, browser, and receiver checkout SDK releases at version 0.5.2.
