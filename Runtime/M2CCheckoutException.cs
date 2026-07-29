@@ -12,23 +12,25 @@ namespace M2C.Checkout
     public enum M2CErrorCode
     {
         /// <summary>Network or transport failure before a response was read.</summary>
-        Network,
+        Network = 0,
         /// <summary>Invalid body, unsupported currency, or malformed URL (HTTP 400).</summary>
-        InvalidRequest,
+        InvalidRequest = 1,
         /// <summary>Origin or success_url not allowed for this key (HTTP 403).</summary>
-        OriginNotAllowed,
+        OriginNotAllowed = 2,
         /// <summary>The account is suspended (HTTP 403).</summary>
-        AccountSuspended,
+        AccountSuspended = 3,
         /// <summary>No vendors linked, or no bids (HTTP 404).</summary>
-        NoVendorsAvailable,
+        NoVendorsAvailable = 4,
         /// <summary>Rate limited (HTTP 429). See <see cref="M2CCheckoutException.RetryAfter"/>.</summary>
-        RateLimited,
-        /// <summary>Service temporarily unavailable, e.g. the result could not be recorded (HTTP 503). Retryable.</summary>
-        ServiceUnavailable,
+        RateLimited = 5,
+        /// <summary>Service temporarily unavailable (HTTP 5xx). Retryable.</summary>
+        ServiceUnavailable = 6,
         /// <summary>The checkout TTL expired before launch; re-create the checkout.</summary>
-        CheckoutExpired,
+        CheckoutExpired = 7,
         /// <summary>An unexpected, non-recoverable failure.</summary>
-        Unknown
+        Unknown = 8,
+        /// <summary>The API key is missing, malformed, or rejected (HTTP 401).</summary>
+        AuthenticationFailed = 9
     }
 
     /// <summary>
@@ -44,7 +46,7 @@ namespace M2C.Checkout
 
         /// <summary>
         /// Seconds the caller should wait before retrying, when the server
-        /// supplied a <c>Retry-After</c> header (set for <see cref="M2CErrorCode.RateLimited"/>).
+        /// supplied a <c>Retry-After</c> header (rate limits and service failures).
         /// Zero when not provided.
         /// </summary>
         public int RetryAfter { get; }

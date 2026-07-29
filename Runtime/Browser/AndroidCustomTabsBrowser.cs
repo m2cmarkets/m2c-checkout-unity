@@ -24,58 +24,9 @@ namespace M2C.Checkout
     {
         public bool RequiresReturnUrl => true;
 
-        // Brief head start after the app returns to the foreground to let an in-flight
-        // deep-link redirect resolve precisely before we fall back to a status read.
-        // Short, because the resume fallback itself polls only briefly.
-        private const double ReturnGraceSeconds = 0.5;
-
         public Task<BrowserOutcome> LaunchAsync(string checkoutUrl, string returnUrl, string cancelUrl)
         {
-            var tcs = new TaskCompletionSource<BrowserOutcome>();
-            Action<string> deepLinkHandler = null;
-            Action<bool> focusHandler = null;
-            bool backgrounded = false;
-
-            Action cleanup = () =>
-            {
-                Application.deepLinkActivated -= deepLinkHandler;
-                M2CScheduler.Instance.AppFocusChanged -= focusHandler;
-            };
-
-            // Happy path: the vendor's redirect to the registered return scheme fires
-            // deepLinkActivated and brings the app back with the outcome URL.
-            deepLinkHandler = url =>
-            {
-                if (!ReturnClassifier.IsConfiguredReturn(url, returnUrl, cancelUrl))
-                    return;
-                cleanup();
-                tcs.TrySetResult(BrowserOutcome.Returned(url));
-            };
-
-            // Safety net for when no deep link arrives (scheme unregistered, redirect
-            // failed, or the user swiped the tab away): when the app returns to the
-            // foreground without one, resolve as Resumed so the client does a
-            // short status reconciliation and then resolves quickly - it never treats
-            // a bare app-resume as a cancel. That distinction matters because real
-            // authenticated payments (3-D Secure / OTP, "approve in your bank app")
-            // legitimately bounce the user out of the tab and back; canceling on resume
-            // would kill live payments. A completed purchase resolves via the status poll
-            // (or the deep link, if it fires); a genuine back-out resolves pending-timeout
-            // quickly. The deep link and the merchant webhook remain the sources of truth.
-            focusHandler = foreground =>
-            {
-                if (!foreground) { backgrounded = true; return; }
-                if (!backgrounded) return; // ignore focus churn before the tab opened
-                M2CScheduler.Instance.DelayThen(ReturnGraceSeconds, () =>
-                {
-                    if (tcs.Task.IsCompleted) return; // a deep link won the race
-                    cleanup();
-                    tcs.TrySetResult(BrowserOutcome.Resumed);
-                });
-            };
-
-            Application.deepLinkActivated += deepLinkHandler;
-            M2CScheduler.Instance.AppFocusChanged += focusHandler;
+            Task<BrowserOutcome> outcome = ReturnMonitor.Start(returnUrl, cancelUrl);
 
             if (!TryLaunchCustomTab(checkoutUrl))
             {
@@ -84,7 +35,7 @@ namespace M2C.Checkout
                 Application.OpenURL(checkoutUrl);
             }
 
-            return tcs.Task;
+            return outcome;
         }
 
         private static bool TryLaunchCustomTab(string url)

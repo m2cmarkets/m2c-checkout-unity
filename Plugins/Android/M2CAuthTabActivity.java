@@ -73,7 +73,11 @@ public final class M2CAuthTabActivity extends ComponentActivity {
         }
 
         try {
-            new AuthTabIntent.Builder().build().launch(launcher, Uri.parse(url), scheme);
+            AuthTabIntent.Builder builder = new AuthTabIntent.Builder();
+            if (!getIntent().getBooleanExtra("m2c_persistent", false)) {
+                builder.setEphemeralBrowsingEnabled(true);
+            }
+            builder.build().launch(launcher, Uri.parse(url), scheme);
         } catch (Throwable t) {
             send("ERROR|launch: " + t.getMessage());
             finish();

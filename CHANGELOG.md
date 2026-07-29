@@ -2,6 +2,50 @@
 
 All notable changes to `com.m2c.checkout` are documented here.
 
+## [0.8.1] - 2026-07-29
+
+- Removed the standalone support, security, and contribution documents and
+  their README links. No runtime behavior changed in this release.
+
+## [0.8.0] - 2026-07-29
+
+- Aligned the browser, iOS, Android, and Unity checkout SDK release train at
+  version 0.8.0.
+
+- Added `InAppPersistent` mobile browser mode. Android omits the Auth Tab
+  ephemeral request, while iOS uses `SFSafariViewController`; both remain
+  best-effort preferences controlled by the browser and OS.
+- Made the existing `InAppPreferred` mode explicitly request an ephemeral
+  Android Auth Tab, matching its ephemeral iOS authentication session behavior.
+- Upgrade note: this changes the Android custom-scheme Auth Tab behavior from
+  version 0.7.0 and earlier. Integrations using the default mode may require the
+  customer to sign in to the vendor again for each checkout. To retain the
+  previous browser-state preference, select **In App Persistent** in the project
+  settings or set `BrowserMode = M2CBrowserMode.InAppPersistent`. Persistence
+  remains best effort and is controlled by the browser and OS.
+- Preserved existing serialized browser-mode values and retained
+  `UseExternalBrowser` as a force-external compatibility override.
+- Require in-app custom-scheme success and cancel URLs to share a scheme, and
+  document the privacy, AutoFill, wallet, and device-validation boundaries.
+
+## [0.7.0] - 2026-07-26
+
+- Added `AuthenticationFailed` for HTTP 401 and aligned all 5xx and
+  `Retry-After` handling with the shared checkout protocol vectors.
+- Made backend-session `CheckoutSession.Ttl` nullable: omitted means unknown,
+  while zero and negative values remain expired. Unity `JsonUtility` does not
+  preserve nullable fields, so map backend DTOs into `CheckoutSession` explicitly.
+- Hardened return classification and request correlation. A mismatched link id is
+  never polled; the SDK briefly reconciles only the active persisted checkout.
+- Require absolute HTTPS status URL templates, with HTTP allowed only for exact
+  loopback hosts, and require exact request-id correlation from M2C status reads.
+- Capped SDK HTTP response bodies at 64 KiB, disabled redirects, and bounded
+  merchant status callbacks to four process-wide in-flight operations.
+- Replaced multi-key recovery state with one versioned, 16 KiB-bounded JSON value
+  that is flushed immediately before browser exposure.
+- Added executable Unity conformance coverage backed by the shared protocol
+  vectors and a workspace check that prevents the fixture copy from drifting.
+
 ## [0.6.0] - 2026-07-23
 
 - Aligned the Unity, browser, and receiver checkout SDK releases at version 0.6.0.

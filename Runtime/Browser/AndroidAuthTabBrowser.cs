@@ -27,6 +27,15 @@ namespace M2C.Checkout
     /// </summary>
     public sealed class AndroidAuthTabBrowser : ICheckoutBrowser
     {
+        private readonly bool _persistent;
+
+        public AndroidAuthTabBrowser() : this(false) { }
+
+        internal AndroidAuthTabBrowser(bool persistent)
+        {
+            _persistent = persistent;
+        }
+
         public bool RequiresReturnUrl => true;
 
         public Task<BrowserOutcome> LaunchAsync(string checkoutUrl, string returnUrl, string cancelUrl)
@@ -79,7 +88,7 @@ namespace M2C.Checkout
 
             M2CScheduler.Instance.AuthTabResult += resultHandler;
 
-            if (!TryLaunchAuthTab(checkoutUrl, scheme))
+            if (!TryLaunchAuthTab(checkoutUrl, scheme, _persistent))
             {
                 M2CScheduler.Instance.AuthTabResult -= resultHandler;
                 // Helper activity unavailable: hand off to standard Custom Tabs (deep-link
@@ -119,7 +128,7 @@ namespace M2C.Checkout
             });
         }
 
-        private static bool TryLaunchAuthTab(string checkoutUrl, string scheme)
+        private static bool TryLaunchAuthTab(string checkoutUrl, string scheme, bool persistent)
         {
             try
             {
@@ -130,6 +139,7 @@ namespace M2C.Checkout
                     intent.Call<AndroidJavaObject>("setClassName", activity, "com.m2c.checkout.M2CAuthTabActivity").Dispose();
                     intent.Call<AndroidJavaObject>("putExtra", "m2c_url", checkoutUrl).Dispose();
                     intent.Call<AndroidJavaObject>("putExtra", "m2c_scheme", scheme).Dispose();
+                    intent.Call<AndroidJavaObject>("putExtra", "m2c_persistent", persistent).Dispose();
                     activity.Call("startActivity", intent);
                     return true;
                 }

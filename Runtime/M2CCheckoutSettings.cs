@@ -55,10 +55,10 @@ namespace M2C.Checkout
         [Tooltip("WebGL browser launch hint. Browsers may still choose whether this appears as a tab, popup window, or mobile tab sheet.")]
         public M2CWebGLLaunchMode WebGLLaunchMode = M2CWebGLLaunchMode.Auto;
 
-        [Tooltip("Optional backend status endpoint template containing {request_id}. Leave blank to poll M2C with the publishable key.")]
+        [Tooltip("Optional absolute HTTPS backend status endpoint template containing {request_id}. Loopback HTTP is allowed for development. Leave blank to poll M2C with the publishable key.")]
         public string StatusUrlTemplate = "";
 
-        [Tooltip("Preferred browser surface. In-app uses platform in-app browser support when available; external always opens the system browser.")]
+        [Tooltip("Preferred browser surface. Privacy-preferred is the default; persistent mode allows browser-managed vendor state but does not guarantee retention, AutoFill, or wallet support.")]
         public M2CBrowserMode BrowserMode = M2CBrowserMode.InAppPreferred;
 
         [Tooltip("Total seconds to poll status before resolving PendingTimeout.")]
@@ -122,6 +122,7 @@ namespace M2C.Checkout
             string statusUrl = (StatusUrlTemplate ?? string.Empty).Trim();
             if (!string.IsNullOrEmpty(statusUrl)) config.StatusSource = StatusSource.Url(statusUrl);
 
+            config.BrowserMode = BrowserMode;
             config.UseExternalBrowser = BrowserMode == M2CBrowserMode.ExternalBrowser;
             config.WebGLLaunchMode = WebGLLaunchMode;
 

@@ -20,7 +20,7 @@ public sealed class CheckoutSample : MonoBehaviour
     [SerializeField] private string webGLReturnUrl = "https://game.example/m2c-return.html";
     [SerializeField] private string webGLCancelUrl = "https://game.example/m2c-cancel.html";
     [SerializeField] private string statusUrlTemplate = ""; // optional: https://shop.example/status/{request_id}
-    [SerializeField] private bool useExternalBrowser = false;
+    [SerializeField] private M2CBrowserMode browserMode = M2CBrowserMode.InAppPreferred;
     [SerializeField] private float statusPollTimeoutSeconds = 90f;
 
     private M2CCheckoutClient _client;
@@ -55,7 +55,7 @@ public sealed class CheckoutSample : MonoBehaviour
             StatusSource = string.IsNullOrEmpty(statusUrl) ? StatusSource.M2C : StatusSource.Url(statusUrl),
             ReturnUrl = successUrl,
             CancelUrl = cancelUrl,
-            UseExternalBrowser = useExternalBrowser,
+            BrowserMode = browserMode,
             Poll = new PollSchedule(PollSchedule.Default.RampSeconds, pollTimeout),
         };
     }
@@ -82,7 +82,7 @@ public sealed class CheckoutSample : MonoBehaviour
 
     // Backend-initiated (recommended): your server ran the auction with its secret
     // key and forwarded these three fields to the client.
-    public async void StartFromBackend(string checkoutUrl, string requestId, int ttl)
+    public async void StartFromBackend(string checkoutUrl, string requestId, int? ttl)
     {
         CheckoutResult result = await _client.StartFromSessionAsync(new CheckoutSession
         {

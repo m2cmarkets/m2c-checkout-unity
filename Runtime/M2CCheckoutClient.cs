@@ -233,6 +233,18 @@ namespace M2C.Checkout
                 }
 
                 if (fallback.Enabled) fallback.RequestId = auction.RequestId;
+                if (auction.Ttl <= 0)
+                {
+                    var invalidTtl = new M2CCheckoutException(
+                        M2CErrorCode.Unknown,
+                        "auction response contained an invalid checkout TTL");
+                    if (!fallback.Enabled) throw invalidTtl;
+                    return await CompleteFallbackAsync(
+                        fallback,
+                        FallbackReason.ApiError,
+                        invalidTtl,
+                        browser);
+                }
                 if (!IsValidCheckoutUrl(auction.CheckoutUrl))
                 {
                     var invalidUrl = new M2CCheckoutException(
@@ -330,6 +342,7 @@ namespace M2C.Checkout
                 throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "missing checkout url or request id");
             }
 
+            CheckoutBrowserFactory.ValidateReturnUrls(_config, returnUrl, cancelUrl);
             ICheckoutBrowser browser = preparedBrowser ?? CreateBrowserForReturnUrl(returnUrl);
             IDisposable runtimeScope = EnterRuntimeScope(browser);
             if (fallback.Enabled) fallback.RequestId = requestId;
@@ -337,15 +350,11 @@ namespace M2C.Checkout
             try
             {
                 SetState(CheckoutState.Ready);
-                if (!fallback.Enabled)
-                {
-                    ResumeStore.Save(requestId, mode, _config.StatusSource);
-                }
                 SetState(CheckoutState.Launching);
-                if (!fallback.Enabled)
-                {
-                    SetState(CheckoutState.AwaitingReturn);
-                }
+                // Persist immediately before the exposure boundary, regardless of
+                // fallback policy, so process death cannot strand a launched checkout.
+                ResumeStore.Save(requestId, mode, _config.StatusSource);
+                if (!fallback.Enabled) SetState(CheckoutState.AwaitingReturn);
 
                 Task<BrowserOutcome> launchTask;
                 try
@@ -380,6 +389,7 @@ namespace M2C.Checkout
 
                     if (outcome.Result == BrowserResult.PreparedLaunchFailed && fallback.Enabled)
                     {
+                        ResumeStore.Clear();
                         return await CompleteFallbackAsync(
                             fallback,
                             FallbackReason.LaunchFailed,
@@ -397,7 +407,6 @@ namespace M2C.Checkout
                 fallback.MarkLaunchedOrUnknown();
                 if (fallback.Enabled)
                 {
-                    ResumeStore.Save(requestId, mode, _config.StatusSource);
                     SetState(CheckoutState.AwaitingReturn);
                 }
 
@@ -463,20 +472,24 @@ namespace M2C.Checkout
                     return Terminal(new CheckoutCanceled(requestId), CheckoutState.Canceled);
                 }
 
-                if (ReturnClassifier.HasMismatchedRequestId(outcome.ReturnUrl, requestId))
+                ReturnClassification classification = ReturnClassifier.Classify(
+                    outcome.ReturnUrl,
+                    returnUrl,
+                    cancelUrl,
+                    requestId);
+                if (classification.Error == ReturnClassifier.RequestIdMismatch)
                 {
-                    ResumeStore.Clear();
-                    SetState(CheckoutState.Error);
-                    throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "return url request_id did not match the active checkout");
+                    // Never let a link-supplied id steer status reads. Reconcile the
+                    // persisted active checkout over the bounded ambiguity window.
+                    return await ResolveViaShortStatusPollAsync(requestId, ResumedStatusWindowSeconds);
                 }
 
-                var verdict = ReturnClassifier.Classify(outcome.ReturnUrl, returnUrl, cancelUrl, requestId, out _);
-                if (verdict == ReturnVerdict.Cancel)
+                if (classification.Verdict == ReturnVerdict.Cancel)
                 {
                     ResumeStore.Clear();
                     return Terminal(new CheckoutCanceled(requestId), CheckoutState.Canceled);
                 }
-                if (verdict == ReturnVerdict.Unknown)
+                if (classification.Verdict == ReturnVerdict.Unknown)
                 {
                     ResumeStore.Clear();
                     SetState(CheckoutState.Error);
@@ -537,7 +550,7 @@ namespace M2C.Checkout
                 {
                     double remainingBeforeDelay = sched.TotalWindowSeconds - stopwatch.Elapsed.TotalSeconds;
                     if (remainingBeforeDelay <= 0) break;
-                    await M2CScheduler.Instance.Delay(Math.Min(delay, remainingBeforeDelay));
+                    await _delay(Math.Min(delay, remainingBeforeDelay), CancellationToken.None);
                     if (delay >= remainingBeforeDelay) break;
                 }
 
@@ -631,7 +644,7 @@ namespace M2C.Checkout
                 {
                     double remainingBeforeDelay = windowSeconds - stopwatch.Elapsed.TotalSeconds;
                     if (remainingBeforeDelay <= 0) break;
-                    await M2CScheduler.Instance.Delay(Math.Min(delay, remainingBeforeDelay));
+                    await _delay(Math.Min(delay, remainingBeforeDelay), CancellationToken.None);
                     if (delay >= remainingBeforeDelay) break;
                 }
 
@@ -766,7 +779,9 @@ namespace M2C.Checkout
                 case StatusSourceKind.Url:
                     return M2CApi.ReadStatusUrlAsync(src.UrlTemplate, requestId, timeoutBudgetSeconds);
                 case StatusSourceKind.Callback:
-                    return src.CheckStatus(requestId);
+                    return CallbackLimiter.InvokeAsync(
+                        () => src.CheckStatus(requestId),
+                        timeoutBudgetSeconds > 0 ? timeoutBudgetSeconds : M2CApi.DefaultHttpTimeoutSeconds);
                 case StatusSourceKind.Subscribe:
                     throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "subscribe status source is not implemented in v1");
                 default:
@@ -898,6 +913,9 @@ namespace M2C.Checkout
 
             // Close the blank checkout surface before merchant code can present IAP.
             CancelPreparedLaunch(preparedBrowser);
+            // Billing fallback is only legal before vendor exposure. Flush any
+            // just-written recovery record before merchant billing takes over.
+            ResumeStore.Clear();
             var context = new FallbackContext
             {
                 AttemptId = attempt.AttemptId,
@@ -969,13 +987,7 @@ namespace M2C.Checkout
         // Keep the HTTPS/loopback-HTTP contract aligned with the shared SDK URL vectors.
         internal static bool IsValidCheckoutUrl(string url)
         {
-            Uri parsed;
-            if (!Uri.TryCreate(url, UriKind.Absolute, out parsed) || string.IsNullOrEmpty(parsed.Host))
-                return false;
-            if (string.Equals(parsed.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
-                return true;
-            return string.Equals(parsed.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
-                   parsed.IsLoopback;
+            return UrlValidator.IsValidHttpsOrLoopbackHttp(url);
         }
 
         private static M2CCheckoutException AsCheckoutException(Exception error)
@@ -1006,7 +1018,7 @@ namespace M2C.Checkout
                 throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "missing checkout url or request id");
             if (!IsValidCheckoutUrl(session.CheckoutUrl))
                 throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "checkout session contains an invalid checkout URL");
-            if (session.Ttl <= 0)
+            if (session.Ttl.HasValue && session.Ttl.Value <= 0)
                 throw new M2CCheckoutException(M2CErrorCode.CheckoutExpired, "the checkout session has expired; create a new one");
         }
 
@@ -1021,6 +1033,10 @@ namespace M2C.Checkout
                 throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "subscribe status source is not implemented in v1");
             if (src.Kind == StatusSourceKind.M2C && string.IsNullOrEmpty(_config.PublishableKey))
                 throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, MissingStatusPublishableKeyMessage());
+            if (src.Kind == StatusSourceKind.Url && !UrlValidator.IsValidStatusTemplate(src.UrlTemplate))
+                throw new M2CCheckoutException(
+                    M2CErrorCode.InvalidRequest,
+                    "status url template must be absolute HTTPS (or loopback HTTP) and contain {request_id}");
             // The opt-in M2C fallback backs a merchant's own source, so it needs the
             // same publishable key the M2C read requires. Fail loud rather than
             // silently never falling back.

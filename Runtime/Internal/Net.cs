@@ -93,7 +93,10 @@ namespace M2C.Checkout.Internal
                 throw MapError(res);
 
             var dto = JsonUtilitySafe.From<AuctionResponseDto>(res.Text);
-            if (dto?.winner == null || string.IsNullOrEmpty(dto.winner.checkout_url) || string.IsNullOrEmpty(dto.request_id))
+            if (dto?.winner == null
+                || string.IsNullOrEmpty(dto.winner.checkout_url)
+                || string.IsNullOrEmpty(dto.request_id)
+                || dto.winner.ttl <= 0)
                 throw new M2CCheckoutException(M2CErrorCode.Unknown, "malformed auction response");
             return new AuctionResult { CheckoutUrl = dto.winner.checkout_url, RequestId = dto.request_id, Ttl = dto.winner.ttl };
         }
@@ -106,11 +109,8 @@ namespace M2C.Checkout.Internal
             if (!res.TransportOk)
                 throw new M2CCheckoutException(M2CErrorCode.Network, res.TransportError ?? "network error");
             if (res.Status == 404) return ClientStatus.Processing;
-            if (res.Status >= 500)
-                throw new M2CCheckoutException(M2CErrorCode.ServiceUnavailable, "status read returned HTTP " + res.Status, (int)res.Status);
             if (res.Status < 200 || res.Status >= 300) throw MapError(res);
-            var dto = JsonUtilitySafe.From<StatusResponseDto>(res.Text);
-            return ParseClientStatus(dto?.status);
+            return ParseM2CStatusResponse(res.Text, requestId);
         }
 
         /// <summary>Reads status from a merchant URL template (no API key).</summary>
@@ -121,7 +121,11 @@ namespace M2C.Checkout.Internal
             if (!res.TransportOk)
                 throw new M2CCheckoutException(M2CErrorCode.Network, res.TransportError ?? "network error");
             if (res.Status < 200 || res.Status >= 300)
-                throw new M2CCheckoutException(M2CErrorCode.ServiceUnavailable, "status read failed: HTTP " + res.Status, (int)res.Status);
+                throw new M2CCheckoutException(
+                    M2CErrorCode.ServiceUnavailable,
+                    "status read failed: HTTP " + res.Status,
+                    (int)res.Status,
+                    RetryAfterParser.Parse(res.RetryAfter, DateTimeOffset.UtcNow) ?? 0);
             var dto = JsonUtilitySafe.From<StatusResponseDto>(res.Text);
             return ParseClientStatus(dto?.status);
         }
@@ -149,6 +153,18 @@ namespace M2C.Checkout.Internal
                     return ClientStatus.Canceled;
                 default: return ClientStatus.Processing; // "processing" and anything unrecognized
             }
+        }
+
+        internal static ClientStatus ParseM2CStatusResponse(string text, string expectedRequestId)
+        {
+            var dto = JsonUtilitySafe.From<StatusResponseDto>(text);
+            if (dto == null
+                || string.IsNullOrEmpty(dto.status)
+                || !string.Equals(dto.request_id, expectedRequestId, StringComparison.Ordinal))
+            {
+                throw new M2CCheckoutException(M2CErrorCode.Unknown, "status response had an unexpected shape");
+            }
+            return ParseClientStatus(dto.status);
         }
 
         internal static string BuildAuctionBody(AuctionRequest req)
@@ -222,12 +238,12 @@ namespace M2C.Checkout.Internal
 
         internal static M2CCheckoutException MapError(HttpResponse res)
         {
-            int retryAfter = 0;
-            int.TryParse(res.RetryAfter, out retryAfter);
+            int retryAfter = RetryAfterParser.Parse(res.RetryAfter, DateTimeOffset.UtcNow) ?? 0;
             string msg = ParseErrorMessage(res.Text) ?? ("HTTP " + res.Status);
             switch (res.Status)
             {
                 case 400: return new M2CCheckoutException(M2CErrorCode.InvalidRequest, msg, 400);
+                case 401: return new M2CCheckoutException(M2CErrorCode.AuthenticationFailed, msg, 401);
                 case 403:
                     var code = (msg != null && msg.ToLowerInvariant().Contains("suspend"))
                         ? M2CErrorCode.AccountSuspended
@@ -235,8 +251,10 @@ namespace M2C.Checkout.Internal
                     return new M2CCheckoutException(code, msg, 403);
                 case 404: return new M2CCheckoutException(M2CErrorCode.NoVendorsAvailable, msg, 404);
                 case 429: return new M2CCheckoutException(M2CErrorCode.RateLimited, msg, 429, retryAfter);
-                case 503: return new M2CCheckoutException(M2CErrorCode.ServiceUnavailable, msg, 503);
-                default: return new M2CCheckoutException(M2CErrorCode.Unknown, msg, (int)res.Status);
+                default:
+                    if (res.Status >= 500 && res.Status <= 599)
+                        return new M2CCheckoutException(M2CErrorCode.ServiceUnavailable, msg, (int)res.Status, retryAfter);
+                    return new M2CCheckoutException(M2CErrorCode.Unknown, msg, (int)res.Status);
             }
         }
 
@@ -257,25 +275,42 @@ namespace M2C.Checkout.Internal
             int timeoutSeconds = 0,
             CancellationToken cancellationToken = default(CancellationToken))
         {
-            using (var req = new UnityWebRequest(url, "POST"))
+            using (var req = CreatePostRequest(url, body, apiKey, timeoutSeconds))
             {
-                req.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(body));
-                req.downloadHandler = new DownloadHandlerBuffer();
-                req.SetRequestHeader("Content-Type", "application/json");
-                if (!string.IsNullOrEmpty(apiKey)) req.SetRequestHeader("X-API-Key", apiKey);
-                if (timeoutSeconds > 0) req.timeout = timeoutSeconds;
                 return await SendAsync(req, cancellationToken);
             }
         }
 
         public static async Task<HttpResponse> GetAsync(string url, string apiKey, int timeoutSeconds = 0)
         {
-            using (var req = UnityWebRequest.Get(url))
+            using (var req = CreateGetRequest(url, apiKey, timeoutSeconds))
             {
-                if (!string.IsNullOrEmpty(apiKey)) req.SetRequestHeader("X-API-Key", apiKey);
-                if (timeoutSeconds > 0) req.timeout = timeoutSeconds;
                 return await SendAsync(req);
             }
+        }
+
+        internal static UnityWebRequest CreatePostRequest(string url, string body, string apiKey, int timeoutSeconds)
+        {
+            var req = new UnityWebRequest(url, "POST");
+            req.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(body));
+            Configure(req, apiKey, timeoutSeconds);
+            req.SetRequestHeader("Content-Type", "application/json");
+            return req;
+        }
+
+        internal static UnityWebRequest CreateGetRequest(string url, string apiKey, int timeoutSeconds)
+        {
+            var req = new UnityWebRequest(url, "GET");
+            Configure(req, apiKey, timeoutSeconds);
+            return req;
+        }
+
+        private static void Configure(UnityWebRequest req, string apiKey, int timeoutSeconds)
+        {
+            req.downloadHandler = new BoundedDownloadHandler();
+            req.redirectLimit = 0;
+            if (!string.IsNullOrEmpty(apiKey)) req.SetRequestHeader("X-API-Key", apiKey);
+            if (timeoutSeconds > 0) req.timeout = timeoutSeconds;
         }
 
         private static Task<HttpResponse> SendAsync(
@@ -289,14 +324,16 @@ namespace M2C.Checkout.Internal
             {
                 cancellationRegistration.Dispose();
                 // Result is Unity 2020.2+; the package baseline is 2021.3.
+                var bounded = req.downloadHandler as BoundedDownloadHandler;
+                bool tooLarge = bounded != null && bounded.TooLarge;
                 bool transportError = req.result == UnityWebRequest.Result.ConnectionError
                                       || req.result == UnityWebRequest.Result.DataProcessingError;
                 tcs.TrySetResult(new HttpResponse
                 {
-                    TransportOk = !transportError,
-                    TransportError = transportError ? req.error : null,
+                    TransportOk = !transportError && !tooLarge,
+                    TransportError = tooLarge ? "response body exceeded 65536 bytes" : transportError ? req.error : null,
                     Status = req.responseCode,
-                    Text = req.downloadHandler != null ? req.downloadHandler.text : null,
+                    Text = !tooLarge && req.downloadHandler != null ? req.downloadHandler.text : null,
                     RetryAfter = req.GetResponseHeader("Retry-After"),
                 });
             };

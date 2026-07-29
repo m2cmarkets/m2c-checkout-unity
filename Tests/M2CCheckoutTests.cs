@@ -14,49 +14,49 @@ namespace M2C.Checkout.Tests
         [Test]
         public void Success_when_url_matches_return()
         {
-            var v = ReturnClassifier.Classify(
+            var result = ReturnClassifier.Classify(
                 "mygame://checkout/return?request_id=abc",
-                "mygame://checkout/return", "mygame://checkout/cancel", "fallback", out string id);
-            Assert.AreEqual(ReturnVerdict.Success, v);
-            Assert.AreEqual("abc", id);
+                "mygame://checkout/return", "mygame://checkout/cancel", "fallback");
+            Assert.AreEqual(ReturnVerdict.Success, result.Verdict);
+            Assert.AreEqual("abc", result.RequestId);
         }
 
         [Test]
         public void Cancel_when_url_matches_cancel()
         {
-            var v = ReturnClassifier.Classify(
+            var result = ReturnClassifier.Classify(
                 "mygame://checkout/cancel",
-                "mygame://checkout/return", "mygame://checkout/cancel", "fallback", out string id);
-            Assert.AreEqual(ReturnVerdict.Cancel, v);
-            Assert.AreEqual("fallback", id); // no request_id param -> fallback id
+                "mygame://checkout/return", "mygame://checkout/cancel", "fallback");
+            Assert.AreEqual(ReturnVerdict.Cancel, result.Verdict);
+            Assert.AreEqual("fallback", result.RequestId); // no request_id param -> fallback id
         }
 
         [Test]
         public void Unknown_when_url_does_not_match_return_or_cancel()
         {
-            var v = ReturnClassifier.Classify(
+            var result = ReturnClassifier.Classify(
                 "mygame://something-else",
-                "mygame://checkout/return", "mygame://checkout/cancel", "fb", out _);
-            Assert.AreEqual(ReturnVerdict.Unknown, v);
+                "mygame://checkout/return", "mygame://checkout/cancel", "fb");
+            Assert.AreEqual(ReturnVerdict.Unknown, result.Verdict);
         }
 
         [Test]
         public void Does_not_prefix_match_partial_path_segment()
         {
-            var v = ReturnClassifier.Classify(
+            var result = ReturnClassifier.Classify(
                 "mygame://checkout/cancelled",
-                "mygame://checkout/return", "mygame://checkout/cancel", "fb", out _);
-            Assert.AreEqual(ReturnVerdict.Unknown, v);
+                "mygame://checkout/return", "mygame://checkout/cancel", "fb");
+            Assert.AreEqual(ReturnVerdict.Unknown, result.Verdict);
         }
 
         [Test]
         public void Allows_child_path_under_configured_return()
         {
-            var v = ReturnClassifier.Classify(
+            var result = ReturnClassifier.Classify(
                 "mygame://checkout/return/vendor?request_id=abc",
-                "mygame://checkout/return", "mygame://checkout/cancel", "fb", out string id);
-            Assert.AreEqual(ReturnVerdict.Success, v);
-            Assert.AreEqual("abc", id);
+                "mygame://checkout/return", "mygame://checkout/cancel", "fb");
+            Assert.AreEqual(ReturnVerdict.Success, result.Verdict);
+            Assert.AreEqual("abc", result.RequestId);
         }
 
         [Test]
@@ -67,12 +67,19 @@ namespace M2C.Checkout.Tests
             Assert.IsNull(ReturnClassifier.ExtractRequestId(null));
         }
 
-        [Test]
-        public void Detects_mismatched_return_request_id()
+        [TestCase("other", "Unknown", "request_id_mismatch")]
+        [TestCase("ACTIVE", "Unknown", "request_id_mismatch")]
+        [TestCase(null, "Success", null)]
+        public void Classifies_request_id_correlation(string returnedId, string verdict, string error)
         {
-            Assert.IsTrue(ReturnClassifier.HasMismatchedRequestId("mygame://checkout/return?request_id=other", "active"));
-            Assert.IsFalse(ReturnClassifier.HasMismatchedRequestId("mygame://checkout/return?request_id=ACTIVE", "active"));
-            Assert.IsFalse(ReturnClassifier.HasMismatchedRequestId("mygame://checkout/return", "active"));
+            string url = "mygame://checkout/return" + (returnedId == null ? "" : "?request_id=" + returnedId);
+            ReturnClassification result = ReturnClassifier.Classify(
+                url,
+                "mygame://checkout/return",
+                "mygame://checkout/cancel",
+                "active");
+            Assert.AreEqual(verdict, result.Verdict.ToString());
+            Assert.AreEqual(error, result.Error);
         }
     }
 
@@ -285,6 +292,7 @@ namespace M2C.Checkout.Tests
                 Assert.AreEqual("mygame://cancel", config.CancelUrl);
                 Assert.AreEqual(StatusSourceKind.Url, config.StatusSource.Kind);
                 Assert.AreEqual("https://shop.example/status/{request_id}", config.StatusSource.UrlTemplate);
+                Assert.AreEqual(M2CBrowserMode.ExternalBrowser, config.BrowserMode);
                 Assert.IsTrue(config.UseExternalBrowser);
                 Assert.AreEqual(45.0, config.Poll.TotalWindowSeconds);
             }
@@ -292,6 +300,86 @@ namespace M2C.Checkout.Tests
             {
                 UnityEngine.Object.DestroyImmediate(settings);
             }
+        }
+
+        [Test]
+        public void Builds_persistent_browser_config_from_settings()
+        {
+            var settings = ScriptableObject.CreateInstance<M2CCheckoutSettings>();
+            try
+            {
+                settings.PublishableKey = "pub_test_mobile";
+                settings.ReturnUrl = "mygame://checkout/return";
+                settings.CancelUrl = "mygame://checkout/cancel";
+                settings.BrowserMode = M2CBrowserMode.InAppPersistent;
+
+                M2CConfig config = settings.ToConfig();
+
+                Assert.AreEqual(M2CBrowserMode.InAppPersistent, config.BrowserMode);
+                Assert.IsFalse(config.UseExternalBrowser);
+                Assert.AreEqual(M2CBrowserMode.InAppPersistent, config.EffectiveBrowserMode);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(settings);
+            }
+        }
+
+        [Test]
+        public void Browser_mode_values_preserve_existing_serialized_settings()
+        {
+            Assert.AreEqual(0, (int)M2CBrowserMode.InAppPreferred);
+            Assert.AreEqual(1, (int)M2CBrowserMode.ExternalBrowser);
+            Assert.AreEqual(2, (int)M2CBrowserMode.InAppPersistent);
+        }
+
+        [Test]
+        public void Legacy_external_browser_flag_overrides_browser_mode()
+        {
+            var config = new M2CConfig
+            {
+                BrowserMode = M2CBrowserMode.InAppPersistent,
+                UseExternalBrowser = true,
+            };
+
+            Assert.AreEqual(M2CBrowserMode.ExternalBrowser, config.EffectiveBrowserMode);
+        }
+
+        [TestCase(M2CBrowserMode.InAppPreferred)]
+        [TestCase(M2CBrowserMode.InAppPersistent)]
+        public void In_app_custom_scheme_requires_matching_cancel_scheme(M2CBrowserMode mode)
+        {
+            var config = new M2CConfig { BrowserMode = mode };
+
+            var error = Assert.Throws<M2CCheckoutException>(() =>
+                CheckoutBrowserFactory.ValidateReturnUrls(
+                    config,
+                    "mygame://checkout/return",
+                    "othergame://checkout/cancel"));
+
+            Assert.AreEqual(M2CErrorCode.InvalidRequest, error.Code);
+        }
+
+        [Test]
+        public void External_browser_allows_different_return_schemes()
+        {
+            var config = new M2CConfig { BrowserMode = M2CBrowserMode.ExternalBrowser };
+
+            Assert.DoesNotThrow(() => CheckoutBrowserFactory.ValidateReturnUrls(
+                config,
+                "mygame://checkout/return",
+                "othergame://checkout/cancel"));
+        }
+
+        [Test]
+        public void In_app_https_returns_do_not_require_matching_hosts()
+        {
+            var config = new M2CConfig { BrowserMode = M2CBrowserMode.InAppPersistent };
+
+            Assert.DoesNotThrow(() => CheckoutBrowserFactory.ValidateReturnUrls(
+                config,
+                "https://success.example/checkout/return",
+                "https://cancel.example/checkout/cancel"));
         }
 
         [Test]
@@ -742,7 +830,8 @@ namespace M2C.Checkout.Tests
             var client = Client(config, (_, __, ___) => Task.FromResult(new AuctionResult
             {
                 CheckoutUrl = "javascript:alert(1)",
-                RequestId = "req_bad_url"
+                RequestId = "req_bad_url",
+                Ttl = 60
             }));
 
             CheckoutResult result = await client.StartAsync(Request);
@@ -942,7 +1031,8 @@ namespace M2C.Checkout.Tests
                 (_, __, ___) => Task.FromResult(new AuctionResult
                 {
                     CheckoutUrl = "https://vendor.example/checkout",
-                    RequestId = "req_launch_fence"
+                    RequestId = "req_launch_fence",
+                    Ttl = 60
                 }),
                 createBrowser: _ => browser);
 
@@ -1109,7 +1199,8 @@ namespace M2C.Checkout.Tests
             return new AuctionResult
             {
                 CheckoutUrl = "https://vendor.example/checkout",
-                RequestId = "req_fallback_test"
+                RequestId = "req_fallback_test",
+                Ttl = 60
             };
         }
 

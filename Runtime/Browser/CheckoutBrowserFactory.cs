@@ -10,21 +10,23 @@ namespace M2C.Checkout.Internal
     {
         public static ICheckoutBrowser Create(M2CConfig config, string returnUrl = null)
         {
+            M2CBrowserMode mode = config.EffectiveBrowserMode;
 #if UNITY_EDITOR
             return new EditorCheckoutBrowser();
 #elif UNITY_WEBGL
             return new WebGLCheckoutBrowser(config.WebGLLaunchMode);
 #elif UNITY_IOS
+            if (mode == M2CBrowserMode.InAppPersistent) return new IosPersistentBrowser();
             // ASWebAuthenticationSession captures custom-scheme callbacks. Universal
             // Links return through the system browser / app-link handoff instead.
-            if (!config.UseExternalBrowser && !IsWebUrl(returnUrl ?? config.ReturnUrl)) return new IosInAppBrowser();
+            if (mode == M2CBrowserMode.InAppPreferred && !IsWebUrl(returnUrl ?? config.ReturnUrl)) return new IosInAppBrowser();
             return new SystemBrowser(waitForDeepLink: true);
 #elif UNITY_ANDROID
             // In-app return: prefer an Auth Tab (no minimize button, and a real result
             // callback instead of inferring the return from focus/deep-link). It degrades
             // to plain Custom Tabs, then the system browser, behind one strategy.
-            // UseExternalBrowser forces the external browser outright.
-            if (!config.UseExternalBrowser) return new AndroidAuthTabBrowser();
+            if (mode != M2CBrowserMode.ExternalBrowser)
+                return new AndroidAuthTabBrowser(mode == M2CBrowserMode.InAppPersistent);
             return new SystemBrowser(waitForDeepLink: true);
 #elif UNITY_STANDALONE
             throw new M2CCheckoutException(
@@ -37,12 +39,34 @@ namespace M2C.Checkout.Internal
 #endif
         }
 
+        internal static void ValidateReturnUrls(M2CConfig config, string returnUrl, string cancelUrl)
+        {
+            if (config.EffectiveBrowserMode == M2CBrowserMode.ExternalBrowser) return;
+
+            string returnScheme = SchemeOf(returnUrl);
+            if (string.IsNullOrEmpty(returnScheme)
+                || string.Equals(returnScheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            string cancelScheme = SchemeOf(cancelUrl);
+            if (!string.Equals(returnScheme, cancelScheme, StringComparison.OrdinalIgnoreCase))
+                throw new M2CCheckoutException(
+                    M2CErrorCode.InvalidRequest,
+                    "in-app checkout requires success and cancel URLs to use the same custom scheme");
+        }
+
         private static bool IsWebUrl(string url)
         {
             Uri parsed;
             return Uri.TryCreate(url, UriKind.Absolute, out parsed)
                    && (string.Equals(parsed.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
                        || string.Equals(parsed.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static string SchemeOf(string url)
+        {
+            Uri parsed;
+            return Uri.TryCreate(url, UriKind.Absolute, out parsed) ? parsed.Scheme : string.Empty;
         }
     }
 }

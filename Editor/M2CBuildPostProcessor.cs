@@ -18,8 +18,9 @@ namespace M2C.Checkout.Editor
     /// <summary>
     /// Wires the mobile return path into the generated platform project so the game
     /// developer just imports the package and builds. iOS: links
-    /// AuthenticationServices.framework and registers URL schemes / Associated
-    /// Domains. Android: adds the return intent-filter to the generated manifest.
+    /// AuthenticationServices.framework, SafariServices.framework, and registers
+    /// URL schemes / Associated Domains. Android: adds the return intent-filter to
+    /// the generated manifest.
     ///
     /// VERIFY ON DEVICE: build post-processors can't be exercised without the iOS /
     /// Android build modules and a real build.
@@ -256,11 +257,13 @@ namespace M2C.Checkout.Editor
             string frameworkTarget = pbx.GetUnityFrameworkTargetGuid();
             pbx.AddFrameworkToProject(frameworkTarget, "AuthenticationServices.framework", false);
             pbx.AddFrameworkToProject(mainTarget, "AuthenticationServices.framework", false);
+            pbx.AddFrameworkToProject(frameworkTarget, "SafariServices.framework", false);
+            pbx.AddFrameworkToProject(mainTarget, "SafariServices.framework", false);
             pbx.WriteToFile(pbxPath);
 
             if (settings == null)
             {
-                Debug.LogWarning("[M2C] No M2CCheckoutSettings asset found; linked AuthenticationServices.framework but skipped iOS return deep-link / associated-domain setup. " +
+                Debug.LogWarning("[M2C] No M2CCheckoutSettings asset found; linked the required iOS browser frameworks but skipped iOS return deep-link / associated-domain setup. " +
                                  "Open or create one via Assets > M2C > Find or Create Checkout Settings.");
                 return;
             }

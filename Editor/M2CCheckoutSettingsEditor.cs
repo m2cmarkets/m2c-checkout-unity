@@ -285,13 +285,15 @@ namespace M2C.Checkout.Editor
             {
                 using (new EditorGUI.IndentLevelScope())
                 {
-                    DrawProperty(_statusUrlTemplate, "Status URL", "Optional URL template. Include {request_id}; the SDK replaces it with the checkout request id.");
+                    DrawProperty(_statusUrlTemplate, "Status URL", "Absolute HTTPS URL template containing {request_id}. Loopback HTTP is allowed for local development.");
                 }
             }
 
-            if (!string.IsNullOrEmpty(statusUrl) && !statusUrl.Contains(RequestIdToken))
+            if (!string.IsNullOrEmpty(statusUrl) && !IsValidStatusUrl(statusUrl))
             {
-                EditorGUILayout.HelpBox("Status URL must contain " + RequestIdToken + ".", MessageType.Error);
+                EditorGUILayout.HelpBox(
+                    "Status URL must be absolute HTTPS (or loopback HTTP) and contain " + RequestIdToken + ".",
+                    MessageType.Error);
             }
             else if (string.IsNullOrEmpty(statusUrl)
                      && !HasAnyPublishableKey())
@@ -306,7 +308,7 @@ namespace M2C.Checkout.Editor
             _advancedExpanded = EditorGUILayout.Foldout(_advancedExpanded, "Advanced Settings", true, _sectionStyle);
             if (!_advancedExpanded) return;
 
-            DrawProperty(_browserMode, "Browser Mode", "Choose whether checkout prefers the in-app browser or always opens the external system browser.");
+            DrawProperty(_browserMode, "Browser Mode", "Choose privacy-preferred in-app, persistence-preferred in-app, or the external system browser. Persistent behavior is best effort.");
             DrawProperty(_statusPollTimeoutSeconds, "Status Poll Timeout", "Total seconds to poll conversion status before resolving PendingTimeout.");
 
             if (_statusPollTimeoutSeconds.floatValue <= 0f
@@ -446,6 +448,19 @@ namespace M2C.Checkout.Editor
                    && !string.Equals(scheme, "https", System.StringComparison.OrdinalIgnoreCase);
         }
 
+        private static bool IsValidStatusUrl(string value)
+        {
+            try
+            {
+                StatusSource.Url(value);
+                return true;
+            }
+            catch (System.ArgumentException)
+            {
+                return false;
+            }
+        }
+
         private static bool HasAnyText(params SerializedProperty[] properties)
         {
             for (int i = 0; i < properties.Length; i++)
@@ -515,7 +530,7 @@ namespace M2C.Checkout.Editor
         private static string PackageVersion()
         {
             var info = UnityEditor.PackageManager.PackageInfo.FindForAssembly(typeof(M2CCheckoutSettings).Assembly);
-            return info != null && !string.IsNullOrEmpty(info.version) ? info.version : "0.6.0";
+            return info != null && !string.IsNullOrEmpty(info.version) ? info.version : "0.8.1";
         }
     }
 }

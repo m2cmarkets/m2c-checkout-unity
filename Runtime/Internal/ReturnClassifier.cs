@@ -9,86 +9,129 @@ namespace M2C.Checkout.Internal
         Unknown
     }
 
-    /// <summary>
-    /// Classifies a return URL against the configured success/cancel URLs and
-    /// recovers the request_id. Pure and platform-free so it can be unit-tested
-    /// without Unity: every browser strategy funnels its return URL through here.
-    /// </summary>
+    internal struct ReturnClassification
+    {
+        public ReturnVerdict Verdict;
+        public string RequestId;
+        public string Error;
+    }
+
+    /// <summary>Pure return URL classification shared by every browser strategy.</summary>
     internal static class ReturnClassifier
     {
-        /// <summary>
-        /// Decide success vs cancel for <paramref name="returnUrl"/>. Matches the
-        /// URL (ignoring its query string) against the cancel URL first, then the
-        /// success URL. Anything else is ignored by browser strategies when they can
-        /// keep listening, or surfaced as an invalid return by the core. The
-        /// <paramref name="fallbackRequestId"/> is returned when the URL carries no
-        /// <c>request_id</c> query param.
-        /// </summary>
-        public static ReturnVerdict Classify(string returnUrl, string successUrl, string cancelUrl, string fallbackRequestId, out string requestId)
+        internal const string MalformedUrl = "malformed_url";
+        internal const string RequestIdMismatch = "request_id_mismatch";
+
+        public static ReturnClassification Classify(
+            string returnUrl,
+            string successUrl,
+            string cancelUrl,
+            string expectedRequestId)
         {
-            requestId = ExtractRequestId(returnUrl) ?? fallbackRequestId;
+            Uri returned;
+            if (!TryAbsolute(returnUrl, out returned))
+            {
+                return new ReturnClassification
+                {
+                    Verdict = ReturnVerdict.Unknown,
+                    Error = MalformedUrl
+                };
+            }
 
-            string baseOf(string u) => StripQuery(u);
-            string ret = baseOf(returnUrl);
+            string requestId;
+            try
+            {
+                requestId = ExtractRequestId(returned);
+            }
+            catch (UriFormatException)
+            {
+                return new ReturnClassification
+                {
+                    Verdict = ReturnVerdict.Unknown,
+                    Error = MalformedUrl
+                };
+            }
 
-            if (!string.IsNullOrEmpty(cancelUrl) && Matches(ret, baseOf(cancelUrl)))
-                return ReturnVerdict.Cancel;
-            if (!string.IsNullOrEmpty(successUrl) && Matches(ret, baseOf(successUrl)))
-                return ReturnVerdict.Success;
-            return ReturnVerdict.Unknown;
+            Uri success;
+            Uri cancel;
+            bool hasSuccess = TryAbsolute(successUrl, out success);
+            bool hasCancel = TryAbsolute(cancelUrl, out cancel);
+            ReturnVerdict verdict = hasCancel && Matches(returned, cancel)
+                ? ReturnVerdict.Cancel
+                : hasSuccess && Matches(returned, success)
+                    ? ReturnVerdict.Success
+                    : ReturnVerdict.Unknown;
+
+            if (verdict != ReturnVerdict.Unknown
+                && !string.IsNullOrEmpty(requestId)
+                && !string.IsNullOrEmpty(expectedRequestId)
+                && !string.Equals(requestId, expectedRequestId, StringComparison.Ordinal))
+            {
+                return new ReturnClassification
+                {
+                    Verdict = ReturnVerdict.Unknown,
+                    RequestId = requestId,
+                    Error = RequestIdMismatch
+                };
+            }
+
+            return new ReturnClassification
+            {
+                Verdict = verdict,
+                RequestId = requestId ?? (verdict == ReturnVerdict.Unknown ? null : expectedRequestId)
+            };
         }
 
         public static bool IsConfiguredReturn(string returnUrl, string successUrl, string cancelUrl)
         {
-            return Classify(returnUrl, successUrl, cancelUrl, null, out _) != ReturnVerdict.Unknown;
-        }
-
-        public static bool HasMismatchedRequestId(string returnUrl, string expectedRequestId)
-        {
-            string actual = ExtractRequestId(returnUrl);
-            return !string.IsNullOrEmpty(actual)
-                   && !string.IsNullOrEmpty(expectedRequestId)
-                   && !string.Equals(actual, expectedRequestId, StringComparison.OrdinalIgnoreCase);
+            return Classify(returnUrl, successUrl, cancelUrl, null).Verdict != ReturnVerdict.Unknown;
         }
 
         internal static string ExtractRequestId(string url)
         {
-            if (string.IsNullOrEmpty(url)) return null;
-            int q = url.IndexOf('?');
-            if (q < 0 || q == url.Length - 1) return null;
-            string query = url.Substring(q + 1);
-            // Strip a fragment if present.
-            int hash = query.IndexOf('#');
-            if (hash >= 0) query = query.Substring(0, hash);
-            foreach (string pair in query.Split('&'))
+            Uri parsed;
+            return TryAbsolute(url, out parsed) ? ExtractRequestId(parsed) : null;
+        }
+
+        private static string ExtractRequestId(Uri url)
+        {
+            string query = url.Query;
+            if (string.IsNullOrEmpty(query) || query == "?") return null;
+            foreach (string pair in query.Substring(1).Split('&'))
             {
-                int eq = pair.IndexOf('=');
-                if (eq <= 0) continue;
-                string key = pair.Substring(0, eq);
-                if (key == "request_id")
-                {
-                    string val = pair.Substring(eq + 1);
-                    return Uri.UnescapeDataString(val);
-                }
+                int equals = pair.IndexOf('=');
+                if (equals <= 0 || pair.Substring(0, equals) != "request_id") continue;
+                return Uri.UnescapeDataString(pair.Substring(equals + 1));
             }
             return null;
         }
 
-        private static string StripQuery(string url)
+        private static bool TryAbsolute(string value, out Uri parsed)
         {
-            if (string.IsNullOrEmpty(url)) return string.Empty;
-            int q = url.IndexOf('?');
-            string s = q >= 0 ? url.Substring(0, q) : url;
-            int hash = s.IndexOf('#');
-            if (hash >= 0) s = s.Substring(0, hash);
-            return s.TrimEnd('/');
+            return Uri.TryCreate(value, UriKind.Absolute, out parsed)
+                   && !string.IsNullOrEmpty(parsed.Scheme);
         }
 
-        private static bool Matches(string a, string b)
+        private static bool Matches(Uri actual, Uri configured)
         {
-            if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) return false;
-            if (!a.StartsWith(b, StringComparison.OrdinalIgnoreCase)) return false;
-            return a.Length == b.Length || a[b.Length] == '/';
+            if (!string.Equals(actual.Scheme, configured.Scheme, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(actual.Host, configured.Host, StringComparison.OrdinalIgnoreCase)
+                || actual.Port != configured.Port)
+                return false;
+
+            string actualPath = NormalizePath(actual.AbsolutePath);
+            string configuredPath = NormalizePath(configured.AbsolutePath);
+            if (string.Equals(actualPath, configuredPath, StringComparison.Ordinal)) return true;
+            string prefix = configuredPath == "/" ? "/" : configuredPath + "/";
+            return actualPath.StartsWith(prefix, StringComparison.Ordinal);
+        }
+
+        private static string NormalizePath(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return "/";
+            return path.Length > 1 && path.EndsWith("/", StringComparison.Ordinal)
+                ? path.Substring(0, path.Length - 1)
+                : path;
         }
     }
 }

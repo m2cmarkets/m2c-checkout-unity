@@ -190,8 +190,12 @@ namespace M2C.Checkout
         public string CheckoutUrl;
         /// <summary>Correlation id for status reads and the webhook.</summary>
         public string RequestId;
-        /// <summary>Seconds the checkout URL stays valid before launch.</summary>
-        public int Ttl;
+        /// <summary>
+        /// Seconds the checkout URL stays valid before launch, or null when the
+        /// backend did not provide a TTL. Map backend JSON explicitly because
+        /// Unity's JsonUtility does not preserve nullable fields.
+        /// </summary>
+        public int? Ttl;
     }
 
     /// <summary>

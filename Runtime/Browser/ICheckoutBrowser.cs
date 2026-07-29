@@ -69,8 +69,9 @@ namespace M2C.Checkout
         /// <summary>
         /// Launch <paramref name="checkoutUrl"/>. <paramref name="returnUrl"/> /
         /// <paramref name="cancelUrl"/> are provided so strategies that need the
-        /// callback scheme (iOS ASWebAuthenticationSession) can register it; deep-link
-        /// strategies may ignore them and capture the next return.
+        /// callback scheme (iOS ASWebAuthenticationSession) can register it, or
+        /// in-process browsers (iOS SFSafariViewController) can validate the next
+        /// return deep link.
         /// </summary>
         Task<BrowserOutcome> LaunchAsync(string checkoutUrl, string returnUrl, string cancelUrl);
     }

@@ -9,20 +9,20 @@ It holds no secrets beyond an optional publishable key, renders no UI (you draw
 every pixel), and never grants goods: **the merchant webhook is the source of
 truth**. The SDK's status read is advisory UX.
 
-Current checkout release: **0.6.0**, aligned with `@m2c/checkout` and `@m2c/checkout-receiver`.
+Current Unity checkout release: **0.8.1**.
 
 > **Status: beta.** The platform-agnostic core (state machine, HTTP,
 > poll/backoff, status sources, error mapping, return classification) is
 > implemented and unit-tested in the Editor. The mobile launch/return paths (the
-> iOS `ASWebAuthenticationSession` shim, the WebGL popup `.jslib`, and the build
-> post-processors) should still be smoke-tested on your target devices before a
-> production rollout.
+> iOS `ASWebAuthenticationSession` / `SFSafariViewController` shims, the WebGL
+> popup `.jslib`, and the build post-processors) should still be smoke-tested on
+> your target devices before a production rollout.
 
 ## Requirements
 
 - Unity 2021.3 LTS or newer.
-- No manual dependency setup. The only non-C# files are a tiny WebGL `.jslib`, a
-  ~60-line iOS Objective-C shim, and a small Android Auth Tab helper activity,
+- No manual dependency setup. The only non-C# files are a tiny WebGL `.jslib`, an
+  iOS Objective-C browser shim, and a small Android Auth Tab helper activity,
   all shipped as source. Android in-app tabs require AndroidX Browser / Activity
   in the generated Gradle build; the package adds them automatically during
   Android project generation.
@@ -44,17 +44,17 @@ This folder is the Unity package root for the `m2c-checkout-unity` repository:
 Via UPM (Package Manager > Add package from git URL):
 
 ```
-https://github.com/m2cmarkets/m2c-checkout-unity.git
+https://github.com/m2cmarkets/m2c-checkout-unity.git#0.8.1
 ```
 
 or add to `Packages/manifest.json`:
 
 ```json
-"com.m2c.checkout": "https://github.com/m2cmarkets/m2c-checkout-unity.git"
+"com.m2c.checkout": "https://github.com/m2cmarkets/m2c-checkout-unity.git#0.8.1"
 ```
 
-This tracks the latest package on the repository's default branch. For a fully
-reproducible production build, append a release tag from GitHub Releases.
+Pin a released tag for reproducible builds. Use an untagged default-branch URL
+only when intentionally testing unreleased development code.
 
 ## Quick start
 
@@ -103,6 +103,19 @@ the settings asset's status URL, `StatusSource.Url(...)`, or
 CheckoutResult result = await client.StartFromSessionAsync(new CheckoutSession {
     CheckoutUrl = url, RequestId = requestId, Ttl = 900,
 });
+```
+
+`Ttl` is nullable for backend-created sessions. Map your backend DTO explicitly:
+an omitted TTL should remain `null`, a positive value is accepted, and zero or a
+negative value is expired. Unity's `JsonUtility` does not preserve nullable fields,
+so do not deserialize backend JSON directly into `CheckoutSession`:
+
+```csharp
+var session = new CheckoutSession {
+    CheckoutUrl = dto.checkout_url,
+    RequestId = dto.request_id,
+    Ttl = dto.has_ttl ? (int?)dto.ttl : null,
+};
 ```
 
 ### Client-initiated (no-backend shortcut)
@@ -193,6 +206,7 @@ switch (result.Outcome) {
 ```
 
 Errors throw `M2CCheckoutException` with a typed `Code` (`InvalidRequest`,
+`AuthenticationFailed`,
 `OriginNotAllowed`, `AccountSuspended`, `NoVendorsAvailable`, `RateLimited` with
 `RetryAfter`, `ServiceUnavailable`, ...). `PendingTimeout` is a result, not an error.
 
@@ -202,6 +216,14 @@ Errors throw `M2CCheckoutException` with a typed `Code` (`InvalidRequest`,
 - `StatusSource.Url("https://shop.example/status/{request_id}")` - poll your backend (the
   authoritative, webhook-fed source). **Recommended for backend-initiated.**
 - `StatusSource.Callback(requestId => ...)` - resolve status however you like.
+
+Status URL templates must be absolute HTTPS URLs and contain `{request_id}`.
+Plain HTTP is accepted only for exact loopback hosts during local development.
+At most four merchant status callbacks may remain in flight process-wide; when
+capacity is exhausted the read fails retryably without invoking another callback.
+M2C status responses must correlate to the exact active `request_id`. If a return
+link supplies a different id, the SDK never polls it; it briefly reconciles only
+the persisted active checkout and otherwise returns `PendingTimeout`.
 
 The project settings asset exposes `StatusUrlTemplate` for the common URL case.
 Leave it blank to keep the default M2C status source; fill it with a template such
@@ -256,6 +278,39 @@ If the dependency is removed or the generated Gradle file cannot be updated, the
 SDK falls back to the external system browser automatically
 (`M2CConfig.UseExternalBrowser = true` forces the external browser).
 
+## Mobile browser modes
+
+Set `M2CConfig.BrowserMode` in code or choose **Browser Mode** under Advanced
+Settings:
+
+When upgrading from version 0.7.0 or earlier, note that the default
+`InAppPreferred` mode now requests an ephemeral Android Auth Tab for
+custom-scheme returns. Customers may therefore need to sign in to the vendor
+again for each checkout. To retain the previous browser-state preference,
+select **In App Persistent** in the project settings or configure it in code:
+
+```csharp
+config.BrowserMode = M2CBrowserMode.InAppPersistent;
+```
+
+Persistence remains best effort and is controlled by the browser and OS.
+
+| Mode | Android | iOS |
+|---|---|---|
+| `InAppPreferred` (default) | Requests an ephemeral Auth Tab for custom-scheme returns. HTTPS returns and compatibility fallbacks may use a non-ephemeral Custom Tab or external browser. | Uses an ephemeral `ASWebAuthenticationSession` for custom-scheme returns and the external browser for HTTPS returns. |
+| `InAppPersistent` | Omits the Auth Tab ephemeral request. HTTPS returns use a normal Custom Tab. | Uses `SFSafariViewController` for custom-scheme and HTTPS returns. |
+| `ExternalBrowser` | Opens the default system browser. | Opens the default system browser. |
+
+Persistence is a preference, not a storage or payment-feature guarantee. The
+browser and OS decide whether vendor cookies, remembered identity, AutoFill, or
+wallet features are available. On iOS, `SFSafariViewController` does not share
+website data with the standalone Safari app. In-app custom-scheme success and
+cancel URLs must use the same scheme so one trusted return handler covers both.
+
+The older `UseExternalBrowser = true` setting remains a force-external override
+for existing code. Browser mode does not change WebGL behavior; use
+`WebGLLaunchMode` for WebGL presentation hints.
+
 WebGL uses browser security rules and does not reuse the Mobile Publishable Key.
 Client-initiated WebGL checkout and M2C status polling require a web/browser
 publishable key; backend-initiated WebGL can leave it blank when `StatusSource`
@@ -270,12 +325,12 @@ ID to read and publish only the matching checkout's short-lived nonce:
 ```js
 try {
   const requestId = new URL(location.href).searchParams.get('request_id');
-  const keyPart = requestId && encodeURIComponent(requestId.toLowerCase());
+  const keyPart = requestId && encodeURIComponent(requestId);
   const activeKey = keyPart && `m2c_checkout_active:${keyPart}`;
   const returnKey = keyPart && `m2c_checkout_return:${keyPart}`;
   const active = activeKey && JSON.parse(localStorage.getItem(activeKey) || 'null');
   if (active?.nonce && active.expires_at > Date.now() &&
-      active.request_id.toLowerCase() === requestId.toLowerCase()) {
+      active.request_id === requestId) {
     const message = { m2c: 'return', request_id: active.request_id, nonce: active.nonce, url: location.href };
     try {
       const channel = new BroadcastChannel('m2c_checkout');
@@ -342,22 +397,24 @@ The SDK is tracking-free: no advertising identifiers, no
 `SystemInfo.deviceUniqueIdentifier`, no analytics. It reads only the coarse
 device type (handheld/desktop/console) to label the checkout platform, and
 persists purchase-scoped resume state in `PlayerPrefs` (request id + mode,
-cleared when consumed). Checkout processing runs on contract necessity - the
-purchase the player is completing - so no consent UI is required for it; your
-game's own consent surface is unaffected.
+cleared when consumed). Persistence-preferred or external browser modes may
+retain vendor-controlled website data in browser-managed storage that the SDK
+cannot inspect or clear. Your game remains responsible for determining its legal
+basis, consent requirements, retention, privacy notice, and complete store
+disclosures for the full integration.
 
-When filling in store privacy forms for a game that embeds this SDK, the
-SDK's contribution is:
+The table below summarizes the data flow contributed by this SDK. Treat it as
+integration input, not a pre-completed legal or store-policy answer:
 
 | Store question | Answer for this SDK |
 |---|---|
 | Apple: Purchases (purchase history) | Yes - transaction amount/currency sent to M2C to run the auction |
 | Apple: Location (coarse) | Yes - country derived server-side from the connection IP; the IP itself is not stored |
 | Apple: Identifiers (user/device ID) | No |
-| Apple: Usage data / tracking (ATT) | No - nothing is used for tracking across apps; no ATT prompt is needed for this SDK |
-| Google: Data collected - Financial info (purchase history) | Yes - amount/currency, ephemeral processing for the transaction |
+| Apple: Usage data / tracking (ATT) | The SDK does not perform cross-app tracking; assess the complete app before deciding its ATT behavior |
+| Google: Data collected - Financial info (purchase history) | Amount and currency are sent to run the transaction |
 | Google: Data collected - Location (approximate) | Yes - IP-derived country, server-side only |
-| Google: Data shared | Transaction context is forwarded to the bidding payment vendors to price the checkout (service-provider processing, not advertising) |
+| Google: Data shared | Transaction context is forwarded to eligible payment vendors to price the checkout; classify this under the rules that apply to your integration |
 
 A fallback purchase is your game's existing native IAP flow and remains covered
 by your game's own store-product, payment, and privacy declarations; it does not
@@ -365,3 +422,8 @@ change the SDK's table above.
 
 Your game's own data practices (and any other SDKs) are declared separately;
 the table covers only what this package adds.
+
+External checkout rules vary by product category, region, store program, and
+checkout surface. The SDK does not determine that a use is permitted. Confirm
+the applicable Apple, Google, console, and storefront requirements before
+enabling external checkout or native billing fallback.

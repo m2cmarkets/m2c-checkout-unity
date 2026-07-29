@@ -7,7 +7,8 @@ attach `CheckoutSample` to a GameObject and call:
 
 - `BuyGems()` - client-initiated: the SDK runs the auction with your publishable key.
 - `StartFromBackend(checkoutUrl, requestId, ttl)` - backend-initiated (recommended):
-  your server ran the auction and forwarded the session.
+  your server ran the auction and forwarded the session. Pass `null` when your
+  backend omitted TTL; do not deserialize nullable TTL through `JsonUtility`.
 - `ResumeIfInterrupted()` - call once on startup to resume a checkout that was killed
   mid-flight.
 
@@ -21,7 +22,11 @@ publishable key and `http(s)` return pages; backend-initiated WebGL can use a
 custom status URL without a WebGL key. Mobile builds use the mobile key and
 deep-link return URLs.
 Browser mode and status poll timeout are project defaults; auction metadata like
-currency, language, and segments belongs on each request.
+currency, language, and segments belongs on each request. When project settings
+are disabled, the sample exposes `browserMode`: keep `InAppPreferred` for the
+privacy-preferred default, choose `InAppPersistent` to allow browser-managed
+vendor state where supported, or choose `ExternalBrowser` for the default system
+browser. Persistent state, AutoFill, and wallet availability are not guaranteed.
 
 In the Editor the mock browser returns a scripted outcome, so the whole flow runs
 without a device; set `EditorCheckoutBrowser.NextOutcome` to exercise cancel/dismiss.

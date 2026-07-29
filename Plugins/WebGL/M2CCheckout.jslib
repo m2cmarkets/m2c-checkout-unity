@@ -130,7 +130,7 @@ mergeInto(LibraryManager.library, {
     },
 
     requestKeyPart: function (requestId) {
-      return encodeURIComponent(String(requestId || '').toLowerCase());
+      return encodeURIComponent(String(requestId || ''));
     },
 
     pruneExpiredRecords: function () {
@@ -204,7 +204,6 @@ mergeInto(LibraryManager.library, {
     var returnUrl = returnUrlPtr ? UTF8ToString(returnUrlPtr) : '';
     var cancelUrl = cancelUrlPtr ? UTF8ToString(cancelUrlPtr) : '';
     var requestId = requestIdPtr ? UTF8ToString(requestIdPtr) : '';
-    var requestIdNormalized = requestId.toLowerCase();
     var state = M2CCheckoutWebGL.state();
     M2CCheckoutWebGL.pruneExpiredRecords();
     var popup = null;
@@ -256,7 +255,7 @@ mergeInto(LibraryManager.library, {
         var raw = localStorage.getItem(activeKey);
         var current = raw ? JSON.parse(raw) : null;
         if (current && current.nonce === activeNonce &&
-            String(current.request_id || '').toLowerCase() === requestIdNormalized) {
+            String(current.request_id || '') === requestId) {
           localStorage.removeItem(activeKey);
           localStorage.removeItem(returnKey);
         }
@@ -358,7 +357,7 @@ mergeInto(LibraryManager.library, {
 
     function onReturnSignal(data) {
       if (!data || data.m2c !== 'return' || data.nonce !== activeNonce) return;
-      if (String(data.request_id || '').toLowerCase() !== requestIdNormalized) return;
+      if (String(data.request_id || '') !== requestId) return;
       var resultUrl = data.url || '';
       // BroadcastChannel and localStorage are origin-scoped. Requiring the URL
       // itself to share the game origin prevents a same-origin sender from

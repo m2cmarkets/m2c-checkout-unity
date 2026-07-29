@@ -42,11 +42,13 @@ namespace M2C.Checkout
         /// <summary>Poll M2C's read endpoint using the publishable key (client-initiated).</summary>
         public static readonly StatusSource M2C = new StatusSource(StatusSourceKind.M2C, null, null);
 
-        /// <summary>Poll a merchant endpoint; <paramref name="template"/> must contain <c>{request_id}</c>.</summary>
+        /// <summary>Poll an absolute HTTPS merchant endpoint containing <c>{request_id}</c>; loopback HTTP is allowed for development.</summary>
         public static StatusSource Url(string template)
         {
-            if (string.IsNullOrEmpty(template) || !template.Contains("{request_id}"))
-                throw new ArgumentException("status url template must contain {request_id}", nameof(template));
+            if (!Internal.UrlValidator.IsValidStatusTemplate(template))
+                throw new ArgumentException(
+                    "status url template must be absolute HTTPS (or loopback HTTP) and contain {request_id}",
+                    nameof(template));
             return new StatusSource(StatusSourceKind.Url, template, null);
         }
 
@@ -114,10 +116,12 @@ namespace M2C.Checkout
     /// <summary>Preferred checkout browser surface for supported platforms.</summary>
     public enum M2CBrowserMode
     {
-        /// <summary>Use the in-app browser when available, with system-browser fallback.</summary>
-        InAppPreferred,
+        /// <summary>Prefer a privacy-oriented in-app browser, with compatibility fallback.</summary>
+        InAppPreferred = 0,
         /// <summary>Always open checkout in the external system browser.</summary>
-        ExternalBrowser
+        ExternalBrowser = 1,
+        /// <summary>Prefer an in-app browser that may reuse browser-managed vendor state, best effort.</summary>
+        InAppPersistent = 2
     }
 
     /// <summary>Browser launch hint for WebGL checkout. Browsers may still choose their own presentation.</summary>
@@ -176,10 +180,20 @@ namespace M2C.Checkout
         public PollSchedule Poll = PollSchedule.Default;
 
         /// <summary>
+        /// Preferred checkout browser mode. Persistence is best effort and does
+        /// not guarantee cookies, remembered identity, AutoFill, or wallet support.
+        /// </summary>
+        public M2CBrowserMode BrowserMode = M2CBrowserMode.InAppPreferred;
+
+        /// <summary>
         /// Force the external system browser (<c>Application.OpenURL</c>) instead of
-        /// the in-app browser. The in-app browser is the default UX on mobile.
+        /// <see cref="BrowserMode"/>. Retained for code integrations that used the
+        /// original boolean configuration.
         /// </summary>
         public bool UseExternalBrowser = false;
+
+        internal M2CBrowserMode EffectiveBrowserMode =>
+            UseExternalBrowser ? M2CBrowserMode.ExternalBrowser : BrowserMode;
 
         /// <summary>
         /// WebGL browser launch hint. Browser settings decide the final tab/window UI.

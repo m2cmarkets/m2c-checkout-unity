@@ -1,15 +1,18 @@
 {
   "name": "com.m2c.checkout",
-  "version": "0.6.0",
+  "version": "0.8.1",
   "displayName": "M2C Checkout",
   "description": "Headless Unity checkout SDK for M2C. Launch the winning vendor's hosted checkout, handle returns on iOS, Android, and WebGL, and reflect conversion status to your UI.",
   "unity": "2021.3",
   "keywords": ["m2c", "checkout", "payments", "iap", "commerce"],
   "author": {
-    "name": "M2C Markets",
+    "name": "M2C",
     "url": "https://m2cmarkets.com"
   },
   "license": "MIT",
+  "documentationUrl": "https://github.com/m2cmarkets/m2c-checkout-unity/blob/main/Documentation~/index.md",
+  "changelogUrl": "https://github.com/m2cmarkets/m2c-checkout-unity/blob/main/CHANGELOG.md",
+  "licensesUrl": "https://github.com/m2cmarkets/m2c-checkout-unity/blob/main/LICENSE",
   "samples": [
     {
       "displayName": "Basic Checkout",

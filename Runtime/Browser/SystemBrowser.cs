@@ -1,4 +1,3 @@
-using System;
 using System.Threading.Tasks;
 using M2C.Checkout.Internal;
 using UnityEngine;
@@ -21,11 +20,6 @@ namespace M2C.Checkout
     {
         private readonly bool _waitForDeepLink;
 
-        // Short head start for a deep-link callback that may arrive just after the
-        // app returns to the foreground. If it does not arrive, the client performs
-        // a short status reconciliation and resolves as completed or pending-timeout.
-        private const double ReturnGraceSeconds = 0.5;
-
         public SystemBrowser(bool waitForDeepLink)
         {
             _waitForDeepLink = waitForDeepLink;
@@ -41,41 +35,9 @@ namespace M2C.Checkout
                 return Task.FromResult(BrowserOutcome.Launched);
             }
 
-            var tcs = new TaskCompletionSource<BrowserOutcome>();
-            Action<string> deepLinkHandler = null;
-            Action<bool> focusHandler = null;
-            bool backgrounded = false;
-
-            Action cleanup = () =>
-            {
-                Application.deepLinkActivated -= deepLinkHandler;
-                M2CScheduler.Instance.AppFocusChanged -= focusHandler;
-            };
-
-            deepLinkHandler = url =>
-            {
-                if (!ReturnClassifier.IsConfiguredReturn(url, returnUrl, cancelUrl))
-                    return;
-                cleanup();
-                tcs.TrySetResult(BrowserOutcome.Returned(url));
-            };
-
-            focusHandler = foreground =>
-            {
-                if (!foreground) { backgrounded = true; return; }
-                if (!backgrounded) return;
-                M2CScheduler.Instance.DelayThen(ReturnGraceSeconds, () =>
-                {
-                    if (tcs.Task.IsCompleted) return;
-                    cleanup();
-                    tcs.TrySetResult(BrowserOutcome.Resumed);
-                });
-            };
-
-            Application.deepLinkActivated += deepLinkHandler;
-            M2CScheduler.Instance.AppFocusChanged += focusHandler;
+            Task<BrowserOutcome> outcome = ReturnMonitor.Start(returnUrl, cancelUrl);
             Application.OpenURL(checkoutUrl);
-            return tcs.Task;
+            return outcome;
         }
     }
 }
