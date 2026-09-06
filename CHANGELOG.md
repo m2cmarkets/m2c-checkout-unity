@@ -2,6 +2,17 @@
 
 All notable changes to `com.m2c.checkout` are documented here.
 
+## [0.9.0] - 2026-08-30
+
+- Added launch-only shop sessions across Android, iOS, WebGL, the Editor, and
+  standalone desktop players, plus one-shot strict status reads.
+- Added the shared session-status vectors and additive `SessionNotFound` error.
+
+## [0.8.2] - 2026-08-25
+
+- Aligned the checkout SDK release train and documented the browser-tab session
+  bridge. No native shop-session API was added.
+
 ## [0.8.1] - 2026-07-29
 
 - Removed the standalone support, security, and contribution documents and

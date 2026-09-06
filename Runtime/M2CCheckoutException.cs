@@ -30,7 +30,9 @@ namespace M2C.Checkout
         /// <summary>An unexpected, non-recoverable failure.</summary>
         Unknown = 8,
         /// <summary>The API key is missing, malformed, or rejected (HTTP 401).</summary>
-        AuthenticationFailed = 9
+        AuthenticationFailed = 9,
+        /// <summary>The requested shop session was not found for this account or mode.</summary>
+        SessionNotFound = 10
     }
 
     /// <summary>

@@ -1,5 +1,9 @@
 # M2C Checkout for Unity (`com.m2c.checkout`)
 
+Shop sessions create and launch one vendor storefront without waiting for it to
+close. They also offer a one-shot advisory status read. Purchases remain
+authoritative through your signed merchant webhook.
+
 Headless checkout SDK for [M2C](https://m2cmarkets.com). Launch the winning
 vendor's hosted checkout, handle returns on iOS, Android, and WebGL, and
 reflect conversion status to your UI - from a single C# API, no platform SDK
@@ -9,7 +13,7 @@ It holds no secrets beyond an optional publishable key, renders no UI (you draw
 every pixel), and never grants goods: **the merchant webhook is the source of
 truth**. The SDK's status read is advisory UX.
 
-Current Unity checkout release: **0.8.1**.
+Current Unity checkout release: **0.9.0**.
 
 > **Status: beta.** The platform-agnostic core (state machine, HTTP,
 > poll/backoff, status sources, error mapping, return classification) is
@@ -44,13 +48,13 @@ This folder is the Unity package root for the `m2c-checkout-unity` repository:
 Via UPM (Package Manager > Add package from git URL):
 
 ```
-https://github.com/m2cmarkets/m2c-checkout-unity.git#0.8.1
+https://github.com/m2cmarkets/m2c-checkout-unity.git#0.9.0
 ```
 
 or add to `Packages/manifest.json`:
 
 ```json
-"com.m2c.checkout": "https://github.com/m2cmarkets/m2c-checkout-unity.git#0.8.1"
+"com.m2c.checkout": "https://github.com/m2cmarkets/m2c-checkout-unity.git#0.9.0"
 ```
 
 Pin a released tag for reproducible builds. Use an untagged default-branch URL
@@ -210,6 +214,49 @@ Errors throw `M2CCheckoutException` with a typed `Code` (`InvalidRequest`,
 `OriginNotAllowed`, `AccountSuspended`, `NoVendorsAvailable`, `RateLimited` with
 `RetryAfter`, `ServiceUnavailable`, ...). `PendingTimeout` is a result, not an error.
 
+## Shop sessions
+
+```csharp
+var client = new M2CCheckoutClient(M2CConfig.FromProjectSettings());
+try
+{
+    ShopSessionHandle handle = await client.StartShopSessionAsync(new ShopSessionRequest
+    {
+        Currency = "USD"
+    });
+    ShopSessionStatus status = await client.ReadShopSessionStatusAsync(handle.SessionId);
+    Debug.Log(status.CompletedPurchases + " purchases reported");
+}
+catch (M2CCheckoutException)
+{
+    // Show the game's built-in store as the natural fallback.
+}
+```
+
+For live sessions, M2C forwards the normalized `Segments` and `ReturnUrl` values
+verbatim to every eligible bidding vendor, not only the winner. Treat every
+eligible vendor as a third-party recipient. Never include personal or sensitive
+customer attributes, secrets, or session tokens in either field, and keep the
+return URL token-free.
+The SDK does not treat the return URL as a purchase outcome or refresh status
+automatically. For an iOS in-app session, it observes the configured return
+route only to dismiss the SDK-owned Safari view. On iOS and Android, a custom
+scheme must be registered on the mobile publishable key and in the app.
+On WebGL, use an HTTPS URL whose origin matches the game page or is allowed on
+the web publishable key; custom schemes are rejected before the request.
+WebGL reserves a blank tab or window synchronously before creation, so the call
+must begin from a user gesture and may fail when popups are blocked. Standalone
+Windows, macOS, and Linux players launch sessions through the system browser.
+Checkout standalone behavior is unchanged. Session-only integrations need a
+publishable key and browser preference, not checkout return or polling config.
+
+Shop-session browser behavior differs from the checkout return flow described
+below. On Android, both in-app modes use a normal Custom Tab. On iOS, both
+in-app modes use `SFSafariViewController`. `ExternalBrowser` opens the default
+browser on both platforms. These session surfaces may use browser-managed
+vendor state and are not an ephemerality guarantee. WebGL and standalone
+behavior remains as described above.
+
 ## Status sources
 
 - `StatusSource.M2C` - poll M2C's read endpoint with the publishable key (client-initiated).
@@ -278,7 +325,7 @@ If the dependency is removed or the generated Gradle file cannot be updated, the
 SDK falls back to the external system browser automatically
 (`M2CConfig.UseExternalBrowser = true` forces the external browser).
 
-## Mobile browser modes
+## Mobile checkout browser modes
 
 Set `M2CConfig.BrowserMode` in code or choose **Browser Mode** under Advanced
 Settings:
@@ -382,7 +429,9 @@ before resuming because functions cannot be serialized.
 
 EditMode tests (`Tests/`) cover the pure core - return classification, status mapping,
 the poll schedule, request building, and error mapping - and run via the Unity Test
-Runner without a device.
+Runner without a device. Open `sdk/unity-testproject` in Unity and run its EditMode
+suite locally. GitHub Actions stays credential-free and runs the Node contract suite,
+Unity WebGL shim and status-coercion gates, and Objective-C plugin compilation.
 
 ## Notes
 

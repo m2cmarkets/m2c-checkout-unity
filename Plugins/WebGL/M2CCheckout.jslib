@@ -165,6 +165,68 @@ mergeInto(LibraryManager.library, {
     }
   },
 
+  M2CShopSessionPrepare__deps: ['$M2CCheckoutWebGL'],
+  M2CShopSessionPrepare: function (launchMode) {
+    var state = M2CCheckoutWebGL.state();
+    if (state.sessionPrepared && !state.sessionPrepared.closed) return 1;
+    if (state.sessionPreparedPoll) clearInterval(state.sessionPreparedPoll);
+    state.sessionPreparedPoll = 0;
+    state.sessionPreparedClosed = false;
+    state.sessionPrepared = M2CCheckoutWebGL.openWindow('about:blank', launchMode);
+    if (!state.sessionPrepared) return 0;
+    if (!M2CCheckoutWebGL.prepareWindow(state.sessionPrepared)) {
+      M2CCheckoutWebGL.closeWindow(state.sessionPrepared);
+      state.sessionPrepared = null;
+      return 0;
+    }
+    try {
+      state.sessionPrepared.blur();
+      window.focus();
+    } catch (e) {}
+    state.sessionPreparedPoll = setInterval(function () {
+      if (state.sessionPrepared && state.sessionPrepared.closed) {
+        state.sessionPreparedClosed = true;
+        state.sessionPrepared = null;
+        clearInterval(state.sessionPreparedPoll);
+        state.sessionPreparedPoll = 0;
+      }
+    }, 250);
+    return 1;
+  },
+
+  M2CShopSessionCancelPrepared__deps: ['$M2CCheckoutWebGL'],
+  M2CShopSessionCancelPrepared: function () {
+    var state = M2CCheckoutWebGL.state();
+    if (state.sessionPreparedPoll) clearInterval(state.sessionPreparedPoll);
+    state.sessionPreparedPoll = 0;
+    M2CCheckoutWebGL.closeWindow(state.sessionPrepared);
+    state.sessionPrepared = null;
+    state.sessionPreparedClosed = false;
+  },
+
+  M2CShopSessionLaunch__deps: ['$M2CCheckoutWebGL'],
+  M2CShopSessionLaunch: function (urlPtr, onLaunch) {
+    var state = M2CCheckoutWebGL.state();
+    var prepared = state.sessionPrepared;
+    var closed = state.sessionPreparedClosed || !prepared || prepared.closed;
+    if (state.sessionPreparedPoll) clearInterval(state.sessionPreparedPoll);
+    state.sessionPreparedPoll = 0;
+    state.sessionPrepared = null;
+    state.sessionPreparedClosed = false;
+    if (closed) {
+      M2CCheckoutWebGL.closeWindow(prepared);
+      {{{ makeDynCall('vi', 'onLaunch') }}}(0);
+      return;
+    }
+    try {
+      prepared.location.replace(UTF8ToString(urlPtr));
+      {{{ makeDynCall('vi', 'onLaunch') }}}(1);
+    } catch (e) {
+      M2CCheckoutWebGL.closeWindow(prepared);
+      {{{ makeDynCall('vi', 'onLaunch') }}}(0);
+    }
+  },
+
   M2CCheckoutPrepare__deps: ['$M2CCheckoutWebGL'],
   M2CCheckoutPrepare: function (launchMode) {
     var state = M2CCheckoutWebGL.state();

@@ -19,6 +19,7 @@ namespace M2C.Checkout.Tests
         {
             public HttpHelpers http_helpers;
             public CheckoutHelpers checkout_helpers;
+            public SessionStatusVector[] session_status;
         }
 
         [Serializable]
@@ -81,6 +82,24 @@ namespace M2C.Checkout.Tests
             public string body;
             public string code;
         }
+
+        [Serializable]
+        private sealed class SessionStatusVector
+        {
+            public string name;
+            public string requested_session_id;
+            public string response_json;
+            public SessionStatusExpected expected;
+            public bool error;
+        }
+
+        [Serializable]
+        private sealed class SessionStatusExpected
+        {
+            public string session_id;
+            public string status;
+            public int completed_purchases;
+        }
 #pragma warning restore 0649
 
         private static KatRoot LoadVectors()
@@ -129,6 +148,28 @@ namespace M2C.Checkout.Tests
                 Assert.AreEqual(
                     M2CErrorCode.ServiceUnavailable,
                     M2CApi.MapError(new HttpResponse { Status = status }).Code);
+            }
+        }
+
+        [Test]
+        public void Shop_session_status_matches_shared_vectors()
+        {
+            foreach (SessionStatusVector vector in LoadVectors().session_status)
+            {
+                try
+                {
+                    ShopSessionStatus actual = M2CApi.ParseShopSessionStatus(
+                        vector.response_json,
+                        vector.requested_session_id);
+                    Assert.IsFalse(vector.error, vector.name);
+                    Assert.AreEqual(vector.expected.session_id, actual.SessionId, vector.name);
+                    Assert.AreEqual(vector.expected.status, actual.Status.ToString().ToLowerInvariant(), vector.name);
+                    Assert.AreEqual(vector.expected.completed_purchases, actual.CompletedPurchases, vector.name);
+                }
+                catch (M2CCheckoutException)
+                {
+                    Assert.IsTrue(vector.error, vector.name);
+                }
             }
         }
 
@@ -213,6 +254,11 @@ namespace M2C.Checkout.Tests
                 "M2CCheckout.m"));
             StringAssert.Contains("#import <SafariServices/SafariServices.h>", ios);
             StringAssert.Contains("m2c_presentSafariViewController", ios);
+            StringAssert.Contains("m2c_presentShopSessionSafari", ios);
+            StringAssert.Contains("g_m2cShopSafariController", ios);
+            StringAssert.Contains("m2c_dismissShopSessionSafari", ios);
+            StringAssert.Contains("controller.presentingViewController", ios);
+            StringAssert.Contains("iOS shop browser could not be presented", ios);
             StringAssert.Contains("m2c_dismissSafariViewController", ios);
             StringAssert.Contains("M2CSafariDismissCallback", ios);
             StringAssert.Contains("dismissViewControllerAnimated:YES completion:finish", ios);

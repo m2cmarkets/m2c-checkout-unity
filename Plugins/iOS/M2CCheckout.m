@@ -29,6 +29,9 @@ API_AVAILABLE(ios(13.0))
 @interface M2CSafariPresenter : NSObject <SFSafariViewControllerDelegate>
 @end
 
+@interface M2CShopSafariPresenter : NSObject <SFSafariViewControllerDelegate>
+@end
+
 static UIWindow *M2CActiveWindow(void) {
     if (@available(iOS 13.0, *)) {
         for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
@@ -97,6 +100,10 @@ static SFSafariViewController *g_m2cSafariController = nil;
 static M2CSafariPresenter *g_m2cSafariPresenter = nil;
 static M2CSafariCallback g_m2cSafariCallback = NULL;
 static BOOL g_m2cSafariDismissing = NO;
+static SFSafariViewController *g_m2cShopSafariController = nil;
+static M2CShopSafariPresenter *g_m2cShopSafariPresenter = nil;
+static M2CSafariDismissCallback g_m2cShopSafariClosedCallback = NULL;
+static BOOL g_m2cShopSafariDismissing = NO;
 
 static void M2CAuthCallbackWithMessage(M2CAuthCallback callback, int success, NSString *message) {
     if (!callback) return;
@@ -115,6 +122,17 @@ static void M2CClearSafariState(SFSafariViewController *controller) {
     g_m2cSafariController = nil;
     g_m2cSafariPresenter = nil;
     g_m2cSafariDismissing = NO;
+}
+
+static void M2CNotifyShopSafariClosed(SFSafariViewController *controller) {
+    if (g_m2cShopSafariController != controller) return;
+    M2CSafariDismissCallback callback = g_m2cShopSafariClosedCallback;
+    g_m2cShopSafariClosedCallback = NULL;
+    controller.delegate = nil;
+    g_m2cShopSafariController = nil;
+    g_m2cShopSafariPresenter = nil;
+    g_m2cShopSafariDismissing = NO;
+    if (callback) callback();
 }
 #endif
 
@@ -205,6 +223,13 @@ static BOOL M2CIsAllowedSafariCheckoutURL(NSString *urlString) {
 }
 @end
 
+@implementation M2CShopSafariPresenter
+- (void)safariViewControllerDidFinish:(SFSafariViewController *)controller {
+    if (g_m2cShopSafariController != controller || g_m2cShopSafariDismissing) return;
+    M2CNotifyShopSafariClosed(controller);
+}
+@end
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -271,8 +296,11 @@ void m2c_presentAuthSession(const char *url, const char *scheme, M2CAuthCallback
 void m2c_presentSafariViewController(const char *url, M2CSafariCallback callback) {
     NSString *urlString = url ? [NSString stringWithUTF8String:url] : @"";
     void (^present)(void) = ^{
-        if (g_m2cSafariController) {
-            M2CSafariCallbackWithMessage(callback, -1, @"iOS persistent browser is already open.");
+        if (g_m2cSafariController || g_m2cShopSafariController) {
+            NSString *message = g_m2cSafariController
+                ? @"iOS persistent browser is already open."
+                : @"iOS shop browser is already open.";
+            M2CSafariCallbackWithMessage(callback, -1, message);
             return;
         }
 
@@ -301,6 +329,104 @@ void m2c_presentSafariViewController(const char *url, M2CSafariCallback callback
         present();
     } else {
         dispatch_async(dispatch_get_main_queue(), present);
+    }
+}
+
+void m2c_presentShopSessionSafari(
+    const char *url,
+    M2CAuthCallback callback,
+    M2CSafariDismissCallback closedCallback) {
+    NSString *urlString = url ? [NSString stringWithUTF8String:url] : @"";
+    void (^present)(void) = ^{
+        if (g_m2cSafariController || g_m2cShopSafariController) {
+            NSString *message = g_m2cShopSafariController
+                ? @"iOS shop browser is already open."
+                : @"iOS persistent browser is already open.";
+            M2CAuthCallbackWithMessage(callback, -1, message);
+            return;
+        }
+        NSURL *shopURL = [NSURL URLWithString:urlString];
+        if (!shopURL || !M2CIsAllowedSafariCheckoutURL(urlString)) {
+            M2CAuthCallbackWithMessage(callback, -1, @"iOS shop browser requires HTTPS or exact loopback HTTP.");
+            return;
+        }
+        UIWindow *window = M2CActiveWindow();
+        UIViewController *host = M2CTopViewController(window.rootViewController);
+        if (!window || !host || !host.view.window) {
+            M2CAuthCallbackWithMessage(callback, -1, @"iOS shop browser could not find an active view controller.");
+            return;
+        }
+        if (host.presentedViewController || host.isBeingPresented ||
+            host.isBeingDismissed || host.transitionCoordinator) {
+            M2CAuthCallbackWithMessage(callback, -1, @"iOS shop browser view controller is transitioning.");
+            return;
+        }
+        g_m2cShopSafariPresenter = [[M2CShopSafariPresenter alloc] init];
+        g_m2cShopSafariController = [[SFSafariViewController alloc] initWithURL:shopURL];
+        g_m2cShopSafariClosedCallback = closedCallback;
+        g_m2cShopSafariDismissing = NO;
+        g_m2cShopSafariController.delegate = g_m2cShopSafariPresenter;
+        SFSafariViewController *controller = g_m2cShopSafariController;
+        __block BOOL settled = NO;
+        void (^finish)(int, NSString *) = ^(int result, NSString *message) {
+            if (settled) return;
+            settled = YES;
+            M2CAuthCallbackWithMessage(callback, result, message);
+        };
+        [host presentViewController:controller animated:YES completion:^{
+            finish(1, nil);
+        }];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (settled) return;
+            if (controller.presentingViewController || controller.viewIfLoaded.window) {
+                finish(1, nil);
+            } else {
+                M2CNotifyShopSafariClosed(controller);
+                finish(-1, @"iOS shop browser could not be presented.");
+            }
+        });
+    };
+    if (NSThread.isMainThread) present();
+    else dispatch_async(dispatch_get_main_queue(), present);
+}
+
+void m2c_dismissShopSessionSafari(void) {
+    void (^dismiss)(void) = ^{
+        SFSafariViewController *controller = g_m2cShopSafariController;
+        if (!controller) return;
+
+        controller.delegate = nil;
+        g_m2cShopSafariDismissing = YES;
+
+        __block BOOL finished = NO;
+        void (^finish)(void) = ^{
+            if (finished) return;
+            finished = YES;
+            M2CNotifyShopSafariClosed(controller);
+        };
+
+        if (controller.presentingViewController && !controller.isBeingDismissed) {
+            [controller dismissViewControllerAnimated:YES completion:finish];
+            return;
+        }
+
+        id<UIViewControllerTransitionCoordinator> coordinator = controller.transitionCoordinator;
+        if (!coordinator) coordinator = controller.presentingViewController.transitionCoordinator;
+        if (coordinator) {
+            BOOL registered = [coordinator animateAlongsideTransition:nil completion:^(id<UIViewControllerTransitionCoordinatorContext> context) {
+                (void)context;
+                finish();
+            }];
+            if (registered) return;
+        }
+
+        finish();
+    };
+
+    if (NSThread.isMainThread) {
+        dismiss();
+    } else {
+        dispatch_async(dispatch_get_main_queue(), dismiss);
     }
 }
 

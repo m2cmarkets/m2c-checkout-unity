@@ -1,5 +1,7 @@
 using System;
 using System.Text;
+using System.Globalization;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine.Networking;
@@ -36,11 +38,44 @@ namespace M2C.Checkout.Internal
         public string error;
     }
 
+    [Serializable]
+    internal sealed class ShopSessionWinnerDto
+    {
+        public string shop_url;
+        public int ttl;
+        public string launch_expires_at;
+    }
+
+    [Serializable]
+    internal sealed class ShopSessionResponseDto
+    {
+        public ShopSessionWinnerDto winner;
+        public string session_id;
+        public string expires_at;
+    }
+
+    [Serializable]
+    internal sealed class ShopSessionStatusDto
+    {
+        public string session_id;
+        public string status;
+        public int completed_purchases;
+    }
+
     /// <summary>The fields of an auction the client needs (no pricing).</summary>
     internal struct AuctionResult
     {
         public string CheckoutUrl;
         public string RequestId;
+        public int Ttl;
+    }
+
+    internal struct ShopSessionResult
+    {
+        public string SessionId;
+        public DateTimeOffset SessionExpiresAt;
+        public DateTimeOffset ShopUrlExpiresAt;
+        public string ShopUrl;
         public int Ttl;
     }
 
@@ -99,6 +134,59 @@ namespace M2C.Checkout.Internal
                 || dto.winner.ttl <= 0)
                 throw new M2CCheckoutException(M2CErrorCode.Unknown, "malformed auction response");
             return new AuctionResult { CheckoutUrl = dto.winner.checkout_url, RequestId = dto.request_id, Ttl = dto.winner.ttl };
+        }
+
+        public async Task<ShopSessionResult> CreateShopSessionAsync(ShopSessionRequest request)
+        {
+            HttpResponse res = await Http.PostJsonAsync(
+                _baseUrl + "/api/v1/session",
+                BuildShopSessionBody(request),
+                _publishableKey,
+                DefaultHttpTimeoutSeconds);
+            if (!res.TransportOk)
+                throw new M2CCheckoutException(M2CErrorCode.Network, res.TransportError ?? "network error");
+            if (res.Status < 200 || res.Status >= 300)
+                throw MapShopSessionCreationError(res);
+            return ParseShopSessionResponse(res.Text);
+        }
+
+        internal static ShopSessionResult ParseShopSessionResponse(string text)
+        {
+            ShopSessionResponseDto dto = JsonUtilitySafe.From<ShopSessionResponseDto>(text);
+            DateTimeOffset sessionExpiresAt;
+            DateTimeOffset shopUrlExpiresAt;
+            string sessionId;
+            int ttl;
+            if (dto?.winner == null
+                || string.IsNullOrEmpty(dto.winner.shop_url)
+                || !JsonFieldParser.TryReadNestedInt32(text, "winner", "ttl", out ttl)
+                || ttl < 60 || ttl > 3600
+                || !TryCanonicalSessionId(dto.session_id, out sessionId)
+                || !TryParseRfc3339(dto.expires_at, out sessionExpiresAt)
+                || !TryParseRfc3339(dto.winner.launch_expires_at, out shopUrlExpiresAt)
+                || !UrlValidator.IsValidHttpsOrLoopbackHttp(dto.winner.shop_url))
+            {
+                throw new M2CCheckoutException(M2CErrorCode.Unknown, "malformed shop session response");
+            }
+            return new ShopSessionResult
+            {
+                SessionId = sessionId,
+                SessionExpiresAt = sessionExpiresAt,
+                ShopUrlExpiresAt = shopUrlExpiresAt,
+                ShopUrl = dto.winner.shop_url,
+                Ttl = ttl
+            };
+        }
+
+        public async Task<ShopSessionStatus> ReadShopSessionStatusAsync(string sessionId)
+        {
+            string canonical = CanonicalSessionId(sessionId);
+            string url = _baseUrl + "/api/v1/session-status?session_id=" + UnityWebRequest.EscapeURL(canonical);
+            HttpResponse res = await Http.GetAsync(url, _publishableKey, DefaultHttpTimeoutSeconds);
+            if (!res.TransportOk)
+                throw new M2CCheckoutException(M2CErrorCode.Network, res.TransportError ?? "network error");
+            if (res.Status < 200 || res.Status >= 300) throw MapShopSessionStatusError(res);
+            return ParseShopSessionStatus(res.Text, canonical);
         }
 
         /// <summary>Reads status from M2C's endpoint. A 404 (row not visible yet) maps to Processing so the caller keeps polling.</summary>
@@ -185,6 +273,85 @@ namespace M2C.Checkout.Internal
                 .Build();
         }
 
+        internal static string BuildShopSessionBody(ShopSessionRequest request)
+        {
+            return new JsonWriter()
+                .String("device_type", DetectDeviceType())
+                .String("platform", DetectSessionPlatform())
+                .String("currency", request.Currency)
+                .String("language", request.Language)
+                .StringArray("segments", request.Segments)
+                .String("return_url", request.ReturnUrl)
+                .Build();
+        }
+
+        internal static string DetectSessionPlatform()
+        {
+#if UNITY_WEBGL && !UNITY_EDITOR
+            return "webgl";
+#elif UNITY_IOS && !UNITY_EDITOR
+            return "ios";
+#elif UNITY_ANDROID && !UNITY_EDITOR
+            return "android";
+#else
+            return "desktop";
+#endif
+        }
+
+        internal static ShopSessionStatus ParseShopSessionStatus(string text, string requestedSessionId)
+        {
+            string canonical = CanonicalSessionId(requestedSessionId);
+            ShopSessionStatusDto dto = JsonUtilitySafe.From<ShopSessionStatusDto>(text);
+            int completedPurchases;
+            if (dto == null
+                || !string.Equals(dto.session_id, canonical, StringComparison.Ordinal)
+                || !JsonFieldParser.TryReadTopLevelInt32(text, "completed_purchases", out completedPurchases)
+                || completedPurchases < 0)
+            {
+                throw new M2CCheckoutException(M2CErrorCode.Unknown, "session status response had an unexpected shape");
+            }
+            ShopSessionState state;
+            if (string.Equals(dto.status, "active", StringComparison.Ordinal)) state = ShopSessionState.Active;
+            else if (string.Equals(dto.status, "expired", StringComparison.Ordinal)) state = ShopSessionState.Expired;
+            else throw new M2CCheckoutException(M2CErrorCode.Unknown, "session status response had an unexpected shape");
+            return new ShopSessionStatus(canonical, state, completedPurchases);
+        }
+
+        internal static string CanonicalSessionId(string value)
+        {
+            string canonical;
+            if (!TryCanonicalSessionId(value, out canonical))
+                throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "sessionId must be a canonical UUID");
+            return canonical;
+        }
+
+        private static bool TryCanonicalSessionId(string value, out string canonical)
+        {
+            canonical = null;
+            Guid parsed;
+            if (string.IsNullOrEmpty(value) || !Guid.TryParseExact(value, "D", out parsed)) return false;
+            canonical = parsed.ToString("D").ToLowerInvariant();
+            return true;
+        }
+
+        private static bool TryParseRfc3339(string value, out DateTimeOffset parsed)
+        {
+            parsed = default(DateTimeOffset);
+            if (string.IsNullOrEmpty(value))
+                return false;
+            Match match = Regex.Match(
+                value,
+                "^(\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2})(?:\\.(\\d{1,9}))?(Z|[+-]\\d{2}:\\d{2})$");
+            if (!match.Success) return false;
+            string milliseconds = (match.Groups[2].Value + "000").Substring(0, 3);
+            string normalized = match.Groups[1].Value + "." + milliseconds + match.Groups[3].Value;
+            return DateTimeOffset.TryParse(
+                normalized,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                out parsed);
+        }
+
         // Coarse device form factor (mobile / desktop), auto-detected at runtime
         // and sent on every auction - same no-override model as DetectCheckoutPlatform.
         // SystemInfo.deviceType works in every build, including WebGL (where it
@@ -256,6 +423,26 @@ namespace M2C.Checkout.Internal
                         return new M2CCheckoutException(M2CErrorCode.ServiceUnavailable, msg, (int)res.Status, retryAfter);
                     return new M2CCheckoutException(M2CErrorCode.Unknown, msg, (int)res.Status);
             }
+        }
+
+        internal static M2CCheckoutException MapShopSessionCreationError(HttpResponse response)
+        {
+            if (response.Status != 409) return MapError(response);
+            M2CCheckoutException mapped = MapError(new HttpResponse
+            {
+                TransportOk = true,
+                Status = 400,
+                Text = response.Text,
+                RetryAfter = response.RetryAfter
+            });
+            return new M2CCheckoutException(M2CErrorCode.InvalidRequest, mapped.Message, 409);
+        }
+
+        internal static M2CCheckoutException MapShopSessionStatusError(HttpResponse response)
+        {
+            return response.Status == 404
+                ? new M2CCheckoutException(M2CErrorCode.SessionNotFound, "shop session was not found", 404)
+                : MapError(response);
         }
 
         private static string ParseErrorMessage(string text)
@@ -356,6 +543,161 @@ namespace M2C.Checkout.Internal
             if (string.IsNullOrEmpty(json)) return null;
             try { return UnityEngine.JsonUtility.FromJson<T>(json); }
             catch { return null; }
+        }
+    }
+
+    internal static class JsonFieldParser
+    {
+        public static bool TryReadTopLevelInt32(string json, string fieldName, out int value)
+        {
+            value = 0;
+            int start;
+            int end;
+            if (!TryFindTopLevelField(json, fieldName, out start, out end)) return false;
+            string raw = json.Substring(start, end - start).Trim();
+            return int.TryParse(raw, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out value);
+        }
+
+        public static bool TryReadNestedInt32(
+            string json,
+            string objectFieldName,
+            string integerFieldName,
+            out int value)
+        {
+            value = 0;
+            int start;
+            int end;
+            if (!TryFindTopLevelField(json, objectFieldName, out start, out end)) return false;
+            string nested = json.Substring(start, end - start).Trim();
+            return nested.Length >= 2
+                && nested[0] == '{'
+                && TryReadTopLevelInt32(nested, integerFieldName, out value);
+        }
+
+        private static bool TryFindTopLevelField(
+            string json,
+            string fieldName,
+            out int valueStart,
+            out int valueEnd)
+        {
+            valueStart = 0;
+            valueEnd = 0;
+            if (string.IsNullOrEmpty(json)) return false;
+            int cursor = 0;
+            SkipWhitespace(json, ref cursor);
+            if (cursor >= json.Length || json[cursor++] != '{') return false;
+            bool found = false;
+            while (true)
+            {
+                SkipWhitespace(json, ref cursor);
+                if (cursor >= json.Length) return false;
+                if (json[cursor] == '}')
+                {
+                    cursor++;
+                    SkipWhitespace(json, ref cursor);
+                    return found && cursor == json.Length;
+                }
+                int keyStart;
+                int keyEnd;
+                bool keyHasEscape;
+                if (!TryReadString(json, ref cursor, out keyStart, out keyEnd, out keyHasEscape)) return false;
+                SkipWhitespace(json, ref cursor);
+                if (cursor >= json.Length || json[cursor++] != ':') return false;
+                SkipWhitespace(json, ref cursor);
+                int candidateStart = cursor;
+                if (!TrySkipValue(json, ref cursor)) return false;
+                int candidateEnd = cursor;
+                bool keyMatches = !keyHasEscape
+                    && keyEnd - keyStart == fieldName.Length
+                    && string.CompareOrdinal(json, keyStart, fieldName, 0, fieldName.Length) == 0;
+                if (keyMatches)
+                {
+                    if (found) return false;
+                    found = true;
+                    valueStart = candidateStart;
+                    valueEnd = candidateEnd;
+                }
+                SkipWhitespace(json, ref cursor);
+                if (cursor >= json.Length) return false;
+                if (json[cursor] == '}')
+                {
+                    cursor++;
+                    SkipWhitespace(json, ref cursor);
+                    return found && cursor == json.Length;
+                }
+                if (json[cursor++] != ',') return false;
+            }
+        }
+
+        private static bool TryReadString(
+            string json,
+            ref int cursor,
+            out int contentStart,
+            out int contentEnd,
+            out bool hasEscape)
+        {
+            contentStart = 0;
+            contentEnd = 0;
+            hasEscape = false;
+            if (cursor >= json.Length || json[cursor++] != '"') return false;
+            contentStart = cursor;
+            while (cursor < json.Length)
+            {
+                char current = json[cursor++];
+                if (current == '"')
+                {
+                    contentEnd = cursor - 1;
+                    return true;
+                }
+                if (current != '\\') continue;
+                hasEscape = true;
+                if (cursor >= json.Length) return false;
+                cursor++;
+            }
+            return false;
+        }
+
+        private static bool TrySkipValue(string json, ref int cursor)
+        {
+            int objectDepth = 0;
+            int arrayDepth = 0;
+            bool inString = false;
+            bool escaped = false;
+            int start = cursor;
+            while (cursor < json.Length)
+            {
+                char current = json[cursor];
+                if (inString)
+                {
+                    cursor++;
+                    if (escaped) escaped = false;
+                    else if (current == '\\') escaped = true;
+                    else if (current == '"') inString = false;
+                    continue;
+                }
+                if (current == '"') inString = true;
+                else if (current == '{') objectDepth++;
+                else if (current == '[') arrayDepth++;
+                else if (current == '}')
+                {
+                    if (objectDepth == 0 && arrayDepth == 0) break;
+                    if (objectDepth == 0) return false;
+                    objectDepth--;
+                }
+                else if (current == ']')
+                {
+                    if (arrayDepth == 0) return false;
+                    arrayDepth--;
+                }
+                else if (current == ',' && objectDepth == 0 && arrayDepth == 0) break;
+                cursor++;
+            }
+            return cursor > start && !inString && objectDepth == 0 && arrayDepth == 0;
+        }
+
+        private static void SkipWhitespace(string json, ref int cursor)
+        {
+            while (cursor < json.Length && char.IsWhiteSpace(json[cursor])) cursor++;
         }
     }
 }

@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Text;
 using M2C.Checkout.Internal;
 using UnityEngine;
 
@@ -23,6 +24,10 @@ namespace M2C.Checkout
         private readonly Func<AuctionRequest, int, CancellationToken, Task<AuctionResult>> _createAuction;
         private readonly Func<double, CancellationToken, Task> _delay;
         private readonly Func<string, ICheckoutBrowser> _createBrowser;
+        private readonly Func<ShopSessionRequest, Task<ShopSessionResult>> _createShopSession;
+        private readonly Func<string, Task<ShopSessionStatus>> _readShopSessionStatus;
+        private readonly Func<IShopSessionBrowser> _createShopSessionBrowser;
+        private readonly Func<double> _monotonicSeconds;
         private static bool _inFlight;
         private static readonly FallbackAttempt DisabledFallbackAttempt =
             new FallbackAttempt(null, null, default(AuctionRequest), null);
@@ -92,7 +97,11 @@ namespace M2C.Checkout
             M2CConfig config,
             Func<AuctionRequest, int, CancellationToken, Task<AuctionResult>> createAuction,
             Func<double, CancellationToken, Task> delay = null,
-            Func<string, ICheckoutBrowser> createBrowser = null)
+            Func<string, ICheckoutBrowser> createBrowser = null,
+            Func<ShopSessionRequest, Task<ShopSessionResult>> createShopSession = null,
+            Func<string, Task<ShopSessionStatus>> readShopSessionStatus = null,
+            Func<IShopSessionBrowser> createShopSessionBrowser = null,
+            Func<double> monotonicSeconds = null)
         {
             _config = config ?? throw new ArgumentNullException(nameof(config));
             if (!string.IsNullOrEmpty(_config.PublishableKey) &&
@@ -106,6 +115,11 @@ namespace M2C.Checkout
             _createAuction = createAuction ?? _api.CreateAuctionAsync;
             _delay = delay ?? ((seconds, token) => M2CScheduler.Instance.Delay(seconds, token));
             _createBrowser = createBrowser ?? (returnUrl => CheckoutBrowserFactory.Create(_config, returnUrl));
+            _createShopSession = createShopSession ?? _api.CreateShopSessionAsync;
+            _readShopSessionStatus = readShopSessionStatus ?? _api.ReadShopSessionStatusAsync;
+            _createShopSessionBrowser = createShopSessionBrowser ?? (() => ShopSessionBrowserFactory.Create(_config));
+            _monotonicSeconds = monotonicSeconds ?? (() =>
+                (double)System.Diagnostics.Stopwatch.GetTimestamp() / System.Diagnostics.Stopwatch.Frequency);
         }
 
         /// <summary>Create a client from the project settings asset, or default config when the asset is absent.</summary>
@@ -279,6 +293,59 @@ namespace M2C.Checkout
                 _inFlight = false;
             }
         }
+
+        /// <summary>Create a shop session, launch the winning storefront, and return its immutable handle.</summary>
+        public async Task<ShopSessionHandle> StartShopSessionAsync(ShopSessionRequest request)
+        {
+            ValidateShopSessionConfig();
+            ValidateShopSessionRequest(request);
+            IShopSessionBrowser browser = _createShopSessionBrowser();
+            if (_inFlight)
+                throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "a checkout is already in progress");
+            _inFlight = true;
+            try
+            {
+                browser.PrepareLaunch();
+                double started = _monotonicSeconds();
+                ShopSessionResult created = await _createShopSession(request);
+                string sessionId = M2CApi.CanonicalSessionId(created.SessionId);
+                if (created.Ttl < 60 || created.Ttl > 3600
+                    || !IsValidCheckoutUrl(created.ShopUrl))
+                {
+                    throw new M2CCheckoutException(
+                        M2CErrorCode.Unknown,
+                        "shop session response had an unexpected shape");
+                }
+                if (_monotonicSeconds() - started >= created.Ttl)
+                    throw new M2CCheckoutException(M2CErrorCode.CheckoutExpired, "shop URL expired before launch");
+                await browser.LaunchAsync(created.ShopUrl, request.ReturnUrl);
+                return new ShopSessionHandle(
+                    sessionId,
+                    created.SessionExpiresAt,
+                    created.ShopUrlExpiresAt,
+                    created.ShopUrl);
+            }
+            finally
+            {
+                try
+                {
+                    browser.CancelPreparedLaunch();
+                }
+                finally
+                {
+                    _inFlight = false;
+                }
+            }
+        }
+
+        /// <summary>Read one advisory shop-session status snapshot without polling or retrying.</summary>
+        public Task<ShopSessionStatus> ReadShopSessionStatusAsync(string sessionId)
+        {
+            ValidateShopSessionConfig();
+            string canonical = M2CApi.CanonicalSessionId(sessionId);
+            return _readShopSessionStatus(canonical);
+        }
+
         /// <summary>
         /// Resume a checkout whose process was killed mid-flight (cold start). Call
         /// once on startup; returns null if nothing was pending, otherwise resumes the
@@ -1003,6 +1070,69 @@ namespace M2C.Checkout
             _inFlight = true;
         }
 
+        private void ValidateShopSessionConfig()
+        {
+            if (string.IsNullOrEmpty(_config.PublishableKey)
+                || !_config.PublishableKey.StartsWith("pub_", StringComparison.Ordinal))
+            {
+                throw new M2CCheckoutException(
+                    M2CErrorCode.InvalidRequest,
+                    "shop sessions require a publishable key");
+            }
+        }
+
+        private static void ValidateShopSessionRequest(ShopSessionRequest request)
+        {
+            if (string.IsNullOrEmpty(request.Currency))
+                throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "currency must be non-empty");
+            if (request.Language != null && Encoding.UTF8.GetByteCount(request.Language) > 64)
+                throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "language is too long");
+            if (request.Segments != null)
+            {
+                if (request.Segments.Length > 20)
+                    throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "segments are invalid");
+                for (int i = 0; i < request.Segments.Length; i++)
+                {
+                    if (request.Segments[i] == null
+                        || Encoding.UTF8.GetByteCount(request.Segments[i]) > 128)
+                        throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "segments are invalid");
+                }
+            }
+            if (!string.IsNullOrEmpty(request.ReturnUrl) && !IsValidShopReturnUrl(request.ReturnUrl))
+                throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "return URL is invalid");
+        }
+
+        private static bool IsValidShopReturnUrl(string value)
+        {
+            if (Encoding.UTF8.GetByteCount(value) > 2048) return false;
+            Uri uri;
+            if (!Uri.TryCreate(value, UriKind.Absolute, out uri) || string.IsNullOrEmpty(uri.Scheme))
+                return false;
+            string scheme = uri.Scheme.ToLowerInvariant();
+            if (scheme == "https") return !string.IsNullOrEmpty(uri.Host);
+            if (scheme == "http") return UrlValidator.IsValidHttpsOrLoopbackHttp(value);
+#if UNITY_WEBGL && !UNITY_EDITOR
+            return false;
+#else
+            switch (scheme)
+            {
+                case "file":
+                case "data":
+                case "javascript":
+                case "about":
+                case "ftp":
+                case "mailto":
+                case "tel":
+                case "sms":
+                case "intent":
+                case "market":
+                    return false;
+                default:
+                    return true;
+            }
+#endif
+        }
+
         private static void EnsureRuntimePlatformSupported()
         {
 #if UNITY_STANDALONE && !UNITY_EDITOR
@@ -1144,6 +1274,52 @@ namespace M2C.Checkout
         public IEnumerator Start(AuctionRequest request, Action<CheckoutResult> onResult = null, Action<CheckoutState> onState = null, CheckoutStartOptions options = null)
         {
             return Await(() => StartAsync(request, options), onResult, onState);
+        }
+
+        /// <summary>Coroutine form of <see cref="StartShopSessionAsync"/>.</summary>
+        public IEnumerator StartShopSession(
+            ShopSessionRequest request,
+            Action<ShopSessionHandle> onResult,
+            Action<M2CCheckoutException> onError)
+        {
+            return AwaitSession(() => StartShopSessionAsync(request), onResult, onError);
+        }
+
+        /// <summary>Coroutine form of <see cref="ReadShopSessionStatusAsync"/>.</summary>
+        public IEnumerator ReadShopSessionStatus(
+            string sessionId,
+            Action<ShopSessionStatus> onResult,
+            Action<M2CCheckoutException> onError)
+        {
+            return AwaitSession(() => ReadShopSessionStatusAsync(sessionId), onResult, onError);
+        }
+
+        private static IEnumerator AwaitSession<T>(
+            Func<Task<T>> start,
+            Action<T> onResult,
+            Action<M2CCheckoutException> onError)
+        {
+            Task<T> task;
+            try
+            {
+                task = start();
+            }
+            catch (Exception error)
+            {
+                onError?.Invoke(AsCheckoutException(error));
+                yield break;
+            }
+            while (!task.IsCompleted) yield return null;
+            if (task.IsFaulted || task.IsCanceled)
+            {
+                Exception error = task.Exception;
+                if (error is AggregateException aggregate && aggregate.InnerExceptions.Count == 1)
+                    error = aggregate.InnerExceptions[0];
+                onError?.Invoke(AsCheckoutException(
+                    error ?? new M2CCheckoutException(M2CErrorCode.Unknown, "shop session operation was canceled")));
+                yield break;
+            }
+            onResult?.Invoke(task.Result);
         }
 
         private IEnumerator Await(Func<Task<CheckoutResult>> start, Action<CheckoutResult> onResult, Action<CheckoutState> onState)
