@@ -2,6 +2,20 @@
 
 All notable changes to `com.m2c.checkout` are documented here.
 
+## [0.10.0] - 2026-10-01
+
+- **Breaking:** Player builds fail when any key field in `M2CCheckoutSettings`
+  (mobile, iOS, Android, or WebGL) holds something other than a `pub_` key,
+  since every field ships in every build. The settings inspector flags the
+  field.
+- M2C now rejects a `Reference` that is not an opaque ID (1-128 ASCII letters,
+  digits, `.`, `_`, `:` or `-`) and accepts only its fixed segment list
+  (`new_customer`, `returning_customer`, `guest`, `verified`, `subscriber`,
+  `trial`, `lapsed`, `high_value`). The SDK passes both through unchanged.
+- Fixed the Git install URL in the README and package documentation. Release
+  tags carry a `v` prefix, so the URL ends in `#v0.10.0`; the previous `#0.9.0`
+  form named a tag that does not exist.
+
 ## [0.9.0] - 2026-08-30
 
 - Added launch-only shop sessions across Android, iOS, WebGL, the Editor, and

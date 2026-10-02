@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using M2C.Checkout.Internal;
 using NUnit.Framework;
@@ -102,12 +103,38 @@ namespace M2C.Checkout.Tests
         }
 #pragma warning restore 0649
 
-        private static KatRoot LoadVectors()
+        private static string VectorsPath()
         {
             PackageInfo package = PackageInfo.FindForAssembly(typeof(M2CCheckoutClient).Assembly);
             Assert.NotNull(package, "M2C package location was not resolved");
-            string path = Path.Combine(package.resolvedPath, "Tests", "Fixtures", "m2c-protocol-vectors.json");
-            return JsonUtility.FromJson<KatRoot>(File.ReadAllText(path));
+            return Path.Combine(package.resolvedPath, "Tests", "Fixtures", "m2c-protocol-vectors.json");
+        }
+
+        private static KatRoot LoadVectors()
+        {
+            return JsonUtility.FromJson<KatRoot>(File.ReadAllText(VectorsPath()));
+        }
+
+        // JsonUtility reads a JSON null int as 0, which conflates "no delay"
+        // (seconds: 0, e.g. a past HTTP date) with "unparseable" (seconds:
+        // null). Read each retry_after vector's raw seconds token instead.
+        private static Dictionary<string, int?> RetryAfterExpectations()
+        {
+            string json = File.ReadAllText(VectorsPath());
+            int start = json.IndexOf("\"retry_after\"", StringComparison.Ordinal);
+            Assert.GreaterOrEqual(start, 0, "retry_after vectors not found");
+            int end = json.IndexOf(']', start);
+            Assert.Greater(end, start, "retry_after array not terminated");
+            var expected = new Dictionary<string, int?>();
+            foreach (Match m in Regex.Matches(
+                json.Substring(start, end - start),
+                @"""name""\s*:\s*""([^""]+)""[^{}]*?""seconds""\s*:\s*(null|-?\d+)"))
+            {
+                expected[m.Groups[1].Value] = m.Groups[2].Value == "null"
+                    ? (int?)null
+                    : int.Parse(m.Groups[2].Value, System.Globalization.CultureInfo.InvariantCulture);
+            }
+            return expected;
         }
 
         [Test]
@@ -176,11 +203,12 @@ namespace M2C.Checkout.Tests
         [Test]
         public void Retry_after_parser_matches_shared_vectors()
         {
-            foreach (RetryAfterVector vector in LoadVectors().http_helpers.retry_after)
+            RetryAfterVector[] vectors = LoadVectors().http_helpers.retry_after;
+            Dictionary<string, int?> expectations = RetryAfterExpectations();
+            Assert.AreEqual(vectors.Length, expectations.Count, "every retry_after vector needs a parsed seconds value");
+            foreach (RetryAfterVector vector in vectors)
             {
-                int? expected = vector.name == "zero" || vector.seconds != 0
-                    ? (int?)vector.seconds
-                    : null;
+                Assert.IsTrue(expectations.TryGetValue(vector.name, out int? expected), vector.name);
                 var now = DateTimeOffset.FromUnixTimeMilliseconds(vector.now_ms);
                 Assert.AreEqual(expected, RetryAfterParser.Parse(vector.header, now), vector.name);
             }

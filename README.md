@@ -13,8 +13,6 @@ It holds no secrets beyond an optional publishable key, renders no UI (you draw
 every pixel), and never grants goods: **the merchant webhook is the source of
 truth**. The SDK's status read is advisory UX.
 
-Current Unity checkout release: **0.9.0**.
-
 > **Status: beta.** The platform-agnostic core (state machine, HTTP,
 > poll/backoff, status sources, error mapping, return classification) is
 > implemented and unit-tested in the Editor. The mobile launch/return paths (the
@@ -48,13 +46,13 @@ This folder is the Unity package root for the `m2c-checkout-unity` repository:
 Via UPM (Package Manager > Add package from git URL):
 
 ```
-https://github.com/m2cmarkets/m2c-checkout-unity.git#0.9.0
+https://github.com/m2cmarkets/m2c-checkout-unity.git#v0.10.0
 ```
 
 or add to `Packages/manifest.json`:
 
 ```json
-"com.m2c.checkout": "https://github.com/m2cmarkets/m2c-checkout-unity.git#0.9.0"
+"com.m2c.checkout": "https://github.com/m2cmarkets/m2c-checkout-unity.git#v0.10.0"
 ```
 
 Pin a released tag for reproducible builds. Use an untagged default-branch URL
@@ -234,10 +232,11 @@ catch (M2CCheckoutException)
 ```
 
 For live sessions, M2C forwards the normalized `Segments` and `ReturnUrl` values
-verbatim to every eligible bidding vendor, not only the winner. Treat every
-eligible vendor as a third-party recipient. Never include personal or sensitive
-customer attributes, secrets, or session tokens in either field, and keep the
-return URL token-free.
+verbatim to every eligible bidding vendor, not only the winner. Segments must
+come from M2C's fixed list (`SupportedSegment` in `openapi.yaml`); any other
+value is rejected. Treat every eligible vendor as a third-party recipient.
+Never include personal or sensitive customer attributes, secrets, or session
+tokens in the return URL, and keep it token-free.
 The SDK does not treat the return URL as a purchase outcome or refresh status
 automatically. For an iOS in-app session, it observes the configured return
 route only to dismiss the SDK-owned Safari view. On iOS and Android, a custom

@@ -495,8 +495,8 @@ namespace M2C.Checkout
                 {
                     if (!fallback.Enabled)
                     {
-                        // Preserve the default-off behavior that previously surfaced
-                        // this internal WebGL signal as a browser cancellation.
+                        // With the fallback off, this internal WebGL signal
+                        // surfaces as a browser cancellation.
                         outcome = BrowserOutcome.Canceled;
                     }
                     else
@@ -849,8 +849,6 @@ namespace M2C.Checkout
                     return CallbackLimiter.InvokeAsync(
                         () => src.CheckStatus(requestId),
                         timeoutBudgetSeconds > 0 ? timeoutBudgetSeconds : M2CApi.DefaultHttpTimeoutSeconds);
-                case StatusSourceKind.Subscribe:
-                    throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "subscribe status source is not implemented in v1");
                 default:
                     return _api.ReadStatusM2CAsync(requestId, timeoutBudgetSeconds);
             }
@@ -1159,8 +1157,6 @@ namespace M2C.Checkout
 
         private void ValidateStatusSource(StatusSource src)
         {
-            if (src.Kind == StatusSourceKind.Subscribe)
-                throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "subscribe status source is not implemented in v1");
             if (src.Kind == StatusSourceKind.M2C && string.IsNullOrEmpty(_config.PublishableKey))
                 throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, MissingStatusPublishableKeyMessage());
             if (src.Kind == StatusSourceKind.Url && !UrlValidator.IsValidStatusTemplate(src.UrlTemplate))
@@ -1224,8 +1220,6 @@ namespace M2C.Checkout
                     if (_config.StatusSource == null || _config.StatusSource.Kind != StatusSourceKind.Callback)
                         throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "saved checkout used a callback status source; recreate the callback in config before resuming");
                     return _config.StatusSource;
-                case StatusSourceKind.Subscribe:
-                    throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "subscribe status source is not implemented in v1");
                 default:
                     return StatusSource.M2C;
             }

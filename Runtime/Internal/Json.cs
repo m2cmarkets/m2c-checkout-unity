@@ -4,7 +4,7 @@ using System.Text;
 namespace M2C.Checkout.Internal
 {
     /// <summary>
-    /// Minimal allocation-light JSON object writer for the one small request body
+    /// Minimal allocation-light JSON object writer for the small request bodies
     /// the SDK sends. We hand-build the request (rather than reflecting over a DTO)
     /// to stay IL2CPP-stripping-safe and to control number formatting; responses
     /// are parsed with UnityEngine.JsonUtility against explicit [Serializable] DTOs.

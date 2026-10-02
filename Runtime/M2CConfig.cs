@@ -61,8 +61,9 @@ namespace M2C.Checkout
     }
 
     /// <summary>
-    /// Bounded exponential-backoff poll schedule, shared by every platform so they
-    /// can't diverge. Default: immediate, then 1s, 2s, 4s, 8s, capped at ~8s
+    /// Bounded exponential-backoff poll schedule. The default matches the iOS and
+    /// Android SDKs; past the end of a custom ramp, Unity repeats the last delay
+    /// while they use 8s. Default: immediate, then 1s, 2s, 4s, 8s, capped at ~8s
     /// intervals, over a ~90s window. On timeout the result is
     /// <see cref="CheckoutPendingTimeout"/>, not an error.
     /// </summary>

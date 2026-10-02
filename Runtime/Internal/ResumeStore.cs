@@ -149,8 +149,6 @@ namespace M2C.Checkout.Internal
         {
             if (string.IsNullOrEmpty(requestId) || (mode != "client" && mode != "session"))
                 throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "invalid checkout recovery record");
-            if (source.Kind == StatusSourceKind.Subscribe)
-                throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "subscribe status source is not implemented in v1");
             if (source.Kind == StatusSourceKind.Url && !UrlValidator.IsValidStatusTemplate(source.UrlTemplate))
                 throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "invalid status URL in checkout recovery record");
             return new ResumeRecord

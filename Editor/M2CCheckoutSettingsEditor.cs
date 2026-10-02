@@ -239,6 +239,15 @@ namespace M2C.Checkout.Editor
             DrawSection("Checkout Keys", "Start with your mobile publishable key. Platform-specific keys stay hidden until you need them.");
             DrawProperty(_publishableKey, "Mobile Publishable Key", "Mobile publishable key for iOS and Android. Never put a secret key in Unity.");
 
+            var nonPublishable = ((M2CCheckoutSettings)target).NonPublishableKeyFields();
+            if (nonPublishable.Count > 0)
+            {
+                EditorGUILayout.HelpBox(
+                    "Every key field ships in the player build. These do not start with pub_: " + string.Join(", ", nonPublishable) +
+                    ". Builds fail until they hold publishable keys.",
+                    MessageType.Error);
+            }
+
             bool hasMobileOverrides = HasAnyText(_iosPublishableKey, _androidPublishableKey);
             if (DrawOptionalToggle(ref _mobileKeyOverridesExpanded, "Use separate iOS and Android keys", hasMobileOverrides, "Only needed if you create separate mobile publishable keys per platform."))
             {
@@ -530,7 +539,7 @@ namespace M2C.Checkout.Editor
         private static string PackageVersion()
         {
             var info = UnityEditor.PackageManager.PackageInfo.FindForAssembly(typeof(M2CCheckoutSettings).Assembly);
-            return info != null && !string.IsNullOrEmpty(info.version) ? info.version : "0.8.1";
+            return info != null && !string.IsNullOrEmpty(info.version) ? info.version : "0.10.0";
         }
     }
 }

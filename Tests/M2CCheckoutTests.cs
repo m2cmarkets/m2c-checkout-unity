@@ -220,8 +220,8 @@ namespace M2C.Checkout.Tests
         [Test]
         public void Writes_segments_array()
         {
-            string body = M2CApi.BuildAuctionBody(new AuctionRequest { TransactionValue = 1, Segments = new[] { "premium", "returning" } });
-            StringAssert.Contains("\"segments\":[\"premium\",\"returning\"]", body);
+            string body = M2CApi.BuildAuctionBody(new AuctionRequest { TransactionValue = 1, Segments = new[] { "high_value", "returning_customer" } });
+            StringAssert.Contains("\"segments\":[\"high_value\",\"returning_customer\"]", body);
         }
 
         private static void AssertInvalidTransactionValue(double value)
@@ -271,6 +271,31 @@ namespace M2C.Checkout.Tests
 
     public class ProjectSettingsTests
     {
+        [Test]
+        public void Flags_every_key_field_that_is_not_publishable()
+        {
+            var settings = ScriptableObject.CreateInstance<M2CCheckoutSettings>();
+            try
+            {
+                settings.PublishableKey = " pub_test_abc ";
+                settings.WebGLPublishableKey = "";
+                settings.IosPublishableKey = "sec_live_leaked";
+                settings.AndroidPublishableKey = "pub_live_android";
+                CollectionAssert.AreEqual(new[] { nameof(M2CCheckoutSettings.IosPublishableKey) }, settings.NonPublishableKeyFields());
+
+                settings.WebGLPublishableKey = "sk_live_x";
+                settings.IosPublishableKey = " ";
+                CollectionAssert.AreEqual(new[] { nameof(M2CCheckoutSettings.WebGLPublishableKey) }, settings.NonPublishableKeyFields());
+
+                settings.WebGLPublishableKey = "pub_web";
+                Assert.IsEmpty(settings.NonPublishableKeyFields());
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(settings);
+            }
+        }
+
         [Test]
         public void Builds_config_from_explicit_settings()
         {

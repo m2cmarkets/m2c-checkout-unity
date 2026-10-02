@@ -6,7 +6,7 @@ returns, and reflecting conversion status in your game UI.
 Install from GitHub with Unity Package Manager:
 
 ```text
-https://github.com/m2cmarkets/m2c-checkout-unity.git#0.9.0
+https://github.com/m2cmarkets/m2c-checkout-unity.git#v0.10.0
 ```
 
 Or add the package to `Packages/manifest.json`:
@@ -14,7 +14,7 @@ Or add the package to `Packages/manifest.json`:
 ```json
 {
   "dependencies": {
-    "com.m2c.checkout": "https://github.com/m2cmarkets/m2c-checkout-unity.git#0.9.0"
+    "com.m2c.checkout": "https://github.com/m2cmarkets/m2c-checkout-unity.git#v0.10.0"
   }
 }
 ```

@@ -10,10 +10,12 @@ namespace M2C.Checkout
     /// Android in-app browser via a Chrome Auth Tab (androidx.browser AuthTab),
     /// launched through the native M2CAuthTabActivity helper. Unlike a plain Custom
     /// Tab, an Auth Tab has no minimize button and returns its result through a real
-    /// ActivityResult callback (bridged back as <see cref="M2CScheduler.AuthTabResult"/>),
-    /// so the return is never inferred from app focus. That removes the whole class of
-    /// false returns - minimize, OTP / 3-D Secure bounces, a backgrounded tab - because
-    /// we simply wait for the callback instead of guessing from a foreground event.
+    /// ActivityResult callback (bridged back as <see cref="M2CScheduler.AuthTabResult"/>).
+    /// The callback is not guaranteed, so <see cref="AuthTabReturn"/> also watches the
+    /// deep-link and foreground signals and settles on whichever arrives first. The
+    /// Unity activity regains focus only once the Auth Tab and helper are gone, so
+    /// minimizing or an OTP / 3-D Secure bounce inside the tab still cannot trip a
+    /// false return.
     ///
     /// Graceful degradation, in order: if the return is an http(s) Universal/App Link,
     /// or the helper activity is missing, or the launch throws (older build, missing
@@ -47,85 +49,33 @@ namespace M2C.Checkout
             if (string.IsNullOrEmpty(scheme) || scheme == "http" || scheme == "https")
                 return new AndroidCustomTabsBrowser().LaunchAsync(checkoutUrl, returnUrl, cancelUrl);
 
-            var tcs = new TaskCompletionSource<BrowserOutcome>();
+            var authTab = new AuthTabReturn(
+                returnUrl,
+                cancelUrl,
+                UnityReturnMonitorRuntime.Instance,
+                () => new AndroidCustomTabsBrowser().LaunchAsync(checkoutUrl, returnUrl, cancelUrl));
             Action<string> resultHandler = null;
-
             resultHandler = payload =>
             {
                 M2CScheduler.Instance.AuthTabResult -= resultHandler;
-
-                // payload: "RETURNED|<url>" | "CANCELED|" | "RESUMED|" | "ERROR|<message>"
-                int sep = payload.IndexOf('|');
-                string kind = sep >= 0 ? payload.Substring(0, sep) : payload;
-                string url = sep >= 0 ? payload.Substring(sep + 1) : string.Empty;
-
-                if (kind == "RETURNED" && !string.IsNullOrEmpty(url))
-                {
-                    tcs.TrySetResult(BrowserOutcome.Returned(url));
-                    return;
-                }
-
-                if (kind == "ERROR")
-                {
-                    LaunchCustomTabsFallback(tcs, checkoutUrl, returnUrl, cancelUrl);
-                    return;
-                }
-
-                if (kind == "CANCELED")
-                {
-                    // RESULT_CANCELED: the user closed the Auth Tab without completing - a
-                    // reliable browser-cancel signal. The core lets already-visible
-                    // backend terminal status win before otherwise resolving cancel.
-                    tcs.TrySetResult(BrowserOutcome.Canceled);
-                    return;
-                }
-
-                // RESUMED (verification failed/timed out, or unknown): ambiguous, never a
-                // hard cancel. A short status window catches a completion that didn't
-                // redirect; otherwise it resolves pending-timeout.
-                tcs.TrySetResult(BrowserOutcome.Resumed);
+                authTab.OnHelperResult(payload);
             };
-
             M2CScheduler.Instance.AuthTabResult += resultHandler;
+            // A deep link or foreground return can win before the helper reports.
+            authTab.Task.ContinueWith(
+                _ => M2CScheduler.Instance.AuthTabResult -= resultHandler,
+                TaskContinuationOptions.ExecuteSynchronously);
 
             if (!TryLaunchAuthTab(checkoutUrl, scheme, _persistent))
             {
                 M2CScheduler.Instance.AuthTabResult -= resultHandler;
+                authTab.Abandon();
                 // Helper activity unavailable: hand off to standard Custom Tabs (deep-link
                 // + focus return), which itself degrades to the system browser.
                 return new AndroidCustomTabsBrowser().LaunchAsync(checkoutUrl, returnUrl, cancelUrl);
             }
 
-            return tcs.Task;
-        }
-
-        private static void LaunchCustomTabsFallback(TaskCompletionSource<BrowserOutcome> tcs, string checkoutUrl, string returnUrl, string cancelUrl)
-        {
-            Task<BrowserOutcome> fallbackTask;
-            try
-            {
-                fallbackTask = new AndroidCustomTabsBrowser().LaunchAsync(checkoutUrl, returnUrl, cancelUrl);
-            }
-            catch (Exception e)
-            {
-                tcs.TrySetException(e);
-                return;
-            }
-
-            fallbackTask.ContinueWith(task =>
-            {
-                if (task.IsCanceled)
-                {
-                    tcs.TrySetCanceled();
-                    return;
-                }
-                if (task.IsFaulted)
-                {
-                    tcs.TrySetException(task.Exception.InnerException ?? task.Exception);
-                    return;
-                }
-                tcs.TrySetResult(task.Result);
-            });
+            return authTab.Task;
         }
 
         private static bool TryLaunchAuthTab(string checkoutUrl, string scheme, bool persistent)

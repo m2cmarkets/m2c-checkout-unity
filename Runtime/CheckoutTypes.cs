@@ -211,7 +211,7 @@ namespace M2C.Checkout
         public string Description;
         public string SuccessUrl;     // mobile custom scheme/app link, or http(s) return page on WebGL
         public string CancelUrl;
-        public string Reference;      // your order id; echoed back in the webhook
+        public string Reference;      // opaque order id (1-128 of A-Z a-z 0-9 . _ : -); echoed back in the webhook
         public string[] Segments;
         public string Language;
     }

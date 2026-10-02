@@ -1,4 +1,5 @@
 using System;
+using System.Threading.Tasks;
 using NUnit.Framework;
 using M2C.Checkout.Internal;
 
@@ -112,6 +113,123 @@ namespace M2C.Checkout.Tests
             Assert.IsFalse(runtime.HasSubscribers);
             runtime.RaiseDeepLink(ReturnUrl);
             Assert.AreEqual(BrowserResult.Resumed, session.Task.Result.Result);
+        }
+
+        // Android Auth Tab: the helper callback is not guaranteed (Custom Tab
+        // fallback, launcher-icon return), so these pin that another signal settles
+        // the checkout instead of leaving it pending forever.
+
+        [Test]
+        public void Auth_tab_deep_link_settles_when_the_helper_never_reports()
+        {
+            var runtime = new FakeReturnMonitorRuntime();
+            var authTab = new AuthTabReturn(ReturnUrl, CancelUrl, runtime, UnexpectedFallback);
+
+            const string returned = ReturnUrl + "?request_id=req_3";
+            runtime.RaiseDeepLink(returned);
+
+            Assert.AreEqual(BrowserResult.Returned, authTab.Task.Result.Result);
+            Assert.AreEqual(returned, authTab.Task.Result.ReturnUrl);
+            Assert.IsFalse(runtime.HasSubscribers);
+        }
+
+        [Test]
+        public void Auth_tab_launcher_return_without_a_callback_resumes()
+        {
+            var runtime = new FakeReturnMonitorRuntime();
+            var authTab = new AuthTabReturn(ReturnUrl, CancelUrl, runtime, UnexpectedFallback);
+
+            runtime.RaiseFocus(false);
+            runtime.RaiseFocus(true);
+            Assert.IsFalse(authTab.Task.IsCompleted);
+            runtime.RunDelayedAction();
+
+            Assert.AreEqual(BrowserResult.Resumed, authTab.Task.Result.Result);
+            Assert.IsFalse(runtime.HasSubscribers);
+        }
+
+        [Test]
+        public void Auth_tab_helper_result_wins_and_stops_the_monitor()
+        {
+            var runtime = new FakeReturnMonitorRuntime();
+            var authTab = new AuthTabReturn(ReturnUrl, CancelUrl, runtime, UnexpectedFallback);
+
+            const string returned = ReturnUrl + "?request_id=req_4";
+            authTab.OnHelperResult("RETURNED|" + returned);
+
+            Assert.AreEqual(BrowserResult.Returned, authTab.Task.Result.Result);
+            Assert.AreEqual(returned, authTab.Task.Result.ReturnUrl);
+            Assert.IsFalse(runtime.HasSubscribers);
+            runtime.RaiseDeepLink(CancelUrl);
+            Assert.AreEqual(returned, authTab.Task.Result.ReturnUrl);
+        }
+
+        [Test]
+        public void Auth_tab_cancel_yields_to_a_deep_link_during_the_grace_period()
+        {
+            var runtime = new FakeReturnMonitorRuntime();
+            var authTab = new AuthTabReturn(ReturnUrl, CancelUrl, runtime, UnexpectedFallback);
+
+            authTab.OnHelperResult("CANCELED|");
+            Assert.AreEqual(AuthTabReturn.CancelGraceSeconds, runtime.DelayedSeconds);
+            Assert.IsFalse(authTab.Task.IsCompleted);
+
+            runtime.RaiseDeepLink(ReturnUrl);
+            runtime.RunDelayedAction();
+
+            Assert.AreEqual(BrowserResult.Returned, authTab.Task.Result.Result);
+            Assert.AreEqual(ReturnUrl, authTab.Task.Result.ReturnUrl);
+        }
+
+        [Test]
+        public void Auth_tab_cancel_settles_after_the_grace_period()
+        {
+            var runtime = new FakeReturnMonitorRuntime();
+            var authTab = new AuthTabReturn(ReturnUrl, CancelUrl, runtime, UnexpectedFallback);
+
+            authTab.OnHelperResult("CANCELED|");
+            runtime.RunDelayedAction();
+
+            Assert.AreEqual(BrowserResult.Canceled, authTab.Task.Result.Result);
+            Assert.IsFalse(runtime.HasSubscribers);
+        }
+
+        [Test]
+        public void Auth_tab_foreground_after_cancel_stays_canceled()
+        {
+            var runtime = new FakeReturnMonitorRuntime();
+            var authTab = new AuthTabReturn(ReturnUrl, CancelUrl, runtime, UnexpectedFallback);
+
+            authTab.OnHelperResult("CANCELED|");
+            runtime.RaiseFocus(false);
+            runtime.RaiseFocus(true);
+            runtime.RunDelayedAction();
+
+            Assert.AreEqual(BrowserResult.Canceled, authTab.Task.Result.Result);
+        }
+
+        [Test]
+        public void Auth_tab_error_stops_the_monitor_before_the_fallback_starts()
+        {
+            var runtime = new FakeReturnMonitorRuntime();
+            bool subscribedAtFallback = true;
+            var fallbackOutcome = BrowserOutcome.Returned(ReturnUrl + "?request_id=req_5");
+            var authTab = new AuthTabReturn(ReturnUrl, CancelUrl, runtime, () =>
+            {
+                subscribedAtFallback = runtime.HasSubscribers;
+                return Task.FromResult(fallbackOutcome);
+            });
+
+            authTab.OnHelperResult("ERROR|register: missing class");
+
+            Assert.IsTrue(authTab.Task.Wait(TimeSpan.FromSeconds(5)));
+            Assert.IsFalse(subscribedAtFallback);
+            Assert.AreEqual(fallbackOutcome.ReturnUrl, authTab.Task.Result.ReturnUrl);
+        }
+
+        private static Task<BrowserOutcome> UnexpectedFallback()
+        {
+            throw new InvalidOperationException("the Custom Tabs fallback should not start");
         }
 
         private sealed class FakeReturnMonitorRuntime : IReturnMonitorRuntime

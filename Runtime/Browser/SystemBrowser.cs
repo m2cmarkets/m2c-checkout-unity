@@ -11,8 +11,8 @@ namespace M2C.Checkout
     /// browser fallback.
     ///
     /// Note: a customer who kills the external browser without completing produces no
-    /// redirect, so a true "dismissed" is not detectable here. Per the foundations
-    /// guidance we do NOT guess cancel from app-lifecycle events; the cancel leg
+    /// redirect, so a true "dismissed" is not detectable here. We do NOT guess
+    /// cancel from app-lifecycle events; the cancel leg
     /// arrives as the vendor's redirect to the cancel URL or through status
     /// reconciliation.
     /// </summary>

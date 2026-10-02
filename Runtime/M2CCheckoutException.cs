@@ -3,7 +3,7 @@ using System;
 namespace M2C.Checkout
 {
     /// <summary>
-    /// Typed error codes mirroring the foundations error taxonomy. A
+    /// Typed error codes. A
     /// <see cref="M2CCheckoutException"/> carries one of these so callers can
     /// branch without string matching. <c>PendingTimeout</c> is intentionally
     /// absent: a poll window elapsing is a terminal <see cref="CheckoutResult"/>

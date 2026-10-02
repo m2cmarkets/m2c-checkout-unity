@@ -91,6 +91,29 @@ namespace M2C.Checkout
             return Resources.Load<M2CCheckoutSettings>(ResourceName);
         }
 
+        /// <summary>
+        /// Names of key fields holding something other than a publishable key.
+        /// Every key field ships in every player build, not only the active
+        /// platform's, so a secret in an unused override would still leak; the
+        /// build preprocessor refuses to build while this list is non-empty.
+        /// </summary>
+        public List<string> NonPublishableKeyFields()
+        {
+            var fields = new List<string>();
+            AddIfNotPublishable(fields, nameof(PublishableKey), PublishableKey);
+            AddIfNotPublishable(fields, nameof(WebGLPublishableKey), WebGLPublishableKey);
+            AddIfNotPublishable(fields, nameof(IosPublishableKey), IosPublishableKey);
+            AddIfNotPublishable(fields, nameof(AndroidPublishableKey), AndroidPublishableKey);
+            return fields;
+        }
+
+        private static void AddIfNotPublishable(List<string> fields, string name, string value)
+        {
+            string key = (value ?? string.Empty).Trim();
+            if (key.Length > 0 && !key.StartsWith("pub_", StringComparison.Ordinal))
+                fields.Add(name);
+        }
+
         /// <summary>Create an <see cref="M2CConfig"/> from this settings asset.</summary>
         public M2CConfig ToConfig()
         {

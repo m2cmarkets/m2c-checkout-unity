@@ -30,7 +30,7 @@ namespace M2C.Checkout.Internal
         /// <summary>
         /// Raised on the Unity main thread with the Android Auth Tab result, bridged
         /// from the native M2CAuthTabActivity via UnitySendMessage. Payload is one of
-        /// "RETURNED|&lt;url&gt;", "DISMISSED|", or "ERROR|&lt;message&gt;".
+        /// "RETURNED|&lt;url&gt;", "CANCELED|", "RESUMED|", or "ERROR|&lt;message&gt;".
         /// </summary>
         public event Action<string> AuthTabResult;
 

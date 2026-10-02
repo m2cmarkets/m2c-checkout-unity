@@ -23,8 +23,12 @@ import com.unity3d.player.UnityPlayer;
  * Why Auth Tab instead of a plain Custom Tab: no minimize button, and a real result
  * callback instead of inferring the return from app focus - so a minimize, an OTP /
  * 3-D Secure bounce, or a backgrounded tab no longer trip a false return. On
- * browsers that do not support Auth Tab natively it auto-falls-back to a standard
- * Custom Tab but still delivers the result through this launcher.
+ * browsers without native Auth Tab support, androidx falls back to a standard
+ * Custom Tab that reports only RESULT_CANCELED here, while the redirect itself
+ * reaches the Unity activity's scheme intent-filter as a deep link. A return
+ * through the launcher icon can also clear this activity before it reports. The
+ * C# side (AuthTabReturn) therefore also watches deep links and app focus and
+ * settles on whichever signal arrives first.
  *
  * Bridge contract (keep in sync with AndroidAuthTabBrowser.cs and M2CScheduler.cs):
  *   GameObject "M2CCheckoutScheduler", method "OnM2CAuthTabResult",
@@ -90,8 +94,9 @@ public final class M2CAuthTabActivity extends ComponentActivity {
                 && result.resultUri != null) {
             send("RETURNED|" + result.resultUri.toString());
         } else if (result != null && result.resultCode == AuthTabIntent.RESULT_CANCELED) {
-            // User closed the Auth Tab without completing - a reliable browser-cancel
-            // signal. The C# side lets already-visible backend terminal status win.
+            // User closed the Auth Tab, or the Custom Tab fallback closed on a redirect
+            // that arrives separately as a deep link. The C# side waits briefly for that
+            // deep link, then lets already-visible backend terminal status win.
             send("CANCELED|");
         } else {
             // Verification failed/timed out, or an unknown code: a return we could not

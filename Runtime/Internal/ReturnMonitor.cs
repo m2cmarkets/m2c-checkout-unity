@@ -107,6 +107,17 @@ namespace M2C.Checkout.Internal
             return StartSession(returnUrl, cancelUrl, runtime, true, null).Task;
         }
 
+        // Runs beside a native result callback (the Android Auth Tab helper) that
+        // the caller also listens to, so the caller keeps the session and stops it
+        // when the callback settles first.
+        internal static ReturnMonitorSession StartAlongsideCallback(
+            string returnUrl,
+            string cancelUrl,
+            IReturnMonitorRuntime runtime)
+        {
+            return StartSession(returnUrl, cancelUrl, runtime, true, null);
+        }
+
         internal static ReturnMonitorSession StartInProcess(
             string returnUrl,
             string cancelUrl,

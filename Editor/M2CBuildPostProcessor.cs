@@ -16,6 +16,29 @@ using UnityEditor.iOS.Xcode;
 namespace M2C.Checkout.Editor
 {
     /// <summary>
+    /// Fails any player build whose settings asset holds a non-publishable value
+    /// in any key field. The runtime check sees only the active platform's key,
+    /// but the asset (with every field) ships in every build.
+    /// </summary>
+    public sealed class M2CKeyBuildValidator : IPreprocessBuildWithReport
+    {
+        public int callbackOrder => 0;
+
+        public void OnPreprocessBuild(BuildReport report)
+        {
+            var settings = M2CCheckoutSettingsEditor.FindAsset();
+            if (settings == null) return;
+            var fields = settings.NonPublishableKeyFields();
+            if (fields.Count > 0)
+            {
+                throw new BuildFailedException(
+                    "[M2C] M2CCheckoutSettings has a key that does not start with pub_ in: " + string.Join(", ", fields) +
+                    ". Every key field ships in the player; use publishable keys only and keep secret keys on your server.");
+            }
+        }
+    }
+
+    /// <summary>
     /// Wires the mobile return path into the generated platform project so the game
     /// developer just imports the package and builds. iOS: links
     /// AuthenticationServices.framework, SafariServices.framework, and registers
@@ -203,9 +226,11 @@ namespace M2C.Checkout.Editor
         // Registers the translucent helper activity that hosts the Auth Tab result
         // launcher. Auth Tab delivers its result only through an ActivityResult launcher
         // registered on an AndroidX ComponentActivity (which Unity's player activity is
-        // not), so M2CAuthTabActivity stands in. No intent-filter is needed (Auth Tab
-        // captures the redirect itself). Idempotent and non-fatal: if anything is off,
-        // the SDK falls back to plain Custom Tabs at runtime.
+        // not), so M2CAuthTabActivity stands in. It needs no intent-filter of its own:
+        // native Auth Tab captures the redirect, and on its Custom Tab fallback the
+        // redirect reaches the Unity activity's scheme filter as a deep link, which
+        // the runtime also watches. Idempotent and non-fatal: if anything is off, the
+        // SDK falls back to plain Custom Tabs at runtime.
         private static void AddAuthTabHelperActivity(string path)
         {
             string manifestPath = Path.Combine(path, "src", "main", "AndroidManifest.xml");

@@ -20,7 +20,7 @@ namespace M2C.Checkout.Tests
             {
                 Currency = "USD",
                 Language = "en-US",
-                Segments = new[] { "returning" },
+                Segments = new[] { "returning_customer" },
                 ReturnUrl = "mygame://shop/closed"
             };
             ShopSessionRequest captured = default(ShopSessionRequest);
@@ -309,7 +309,7 @@ namespace M2C.Checkout.Tests
             {
                 Currency = "USD",
                 Language = "en-US",
-                Segments = new[] { "returning", "vip" },
+                Segments = new[] { "returning_customer", "subscriber" },
                 ReturnUrl = "mygame://shop/closed"
             });
 
@@ -317,7 +317,7 @@ namespace M2C.Checkout.Tests
             StringAssert.Contains("\"platform\":\"desktop\"", full);
             StringAssert.Contains("\"currency\":\"USD\"", full);
             StringAssert.Contains("\"language\":\"en-US\"", full);
-            StringAssert.Contains("\"segments\":[\"returning\",\"vip\"]", full);
+            StringAssert.Contains("\"segments\":[\"returning_customer\",\"subscriber\"]", full);
             StringAssert.Contains("\"return_url\":\"mygame://shop/closed\"", full);
 
             string minimal = M2CApi.BuildShopSessionBody(Request());
