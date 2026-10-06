@@ -2,6 +2,14 @@
 
 All notable changes to `com.m2c.checkout` are documented here.
 
+## [0.11.0] - 2026-10-05
+
+- Short ambiguous-return polls reserve one bounded opt-in M2C status backstop
+  read. Configured and saved primary sources share resolution and timeout rules.
+- Preserve primary results and actionable errors, propagate canceled status
+  reads, and clarify reconciliation before retrying an uncertain payment.
+- Document registered mobile HTTP(S) return origins for checkout and shop sessions.
+
 ## [0.10.0] - 2026-10-01
 
 - **Breaking:** Player builds fail when any key field in `M2CCheckoutSettings`

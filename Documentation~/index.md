@@ -6,7 +6,7 @@ returns, and reflecting conversion status in your game UI.
 Install from GitHub with Unity Package Manager:
 
 ```text
-https://github.com/m2cmarkets/m2c-checkout-unity.git#v0.10.0
+https://github.com/m2cmarkets/m2c-checkout-unity.git#v0.11.0
 ```
 
 Or add the package to `Packages/manifest.json`:
@@ -14,7 +14,7 @@ Or add the package to `Packages/manifest.json`:
 ```json
 {
   "dependencies": {
-    "com.m2c.checkout": "https://github.com/m2cmarkets/m2c-checkout-unity.git#v0.10.0"
+    "com.m2c.checkout": "https://github.com/m2cmarkets/m2c-checkout-unity.git#v0.11.0"
   }
 }
 ```
@@ -26,6 +26,10 @@ After installing, open **Assets > M2C > Find or Create Checkout Settings** and
 configure your mobile publishable key, WebGL publishable key when needed, mobile
 and WebGL return URLs, optional backend status URL, mobile return setup, and the
 mobile browser mode.
+
+For mobile HTTPS checkout and shop-session returns, register each exact origin
+under **Mobile return origins** on the mobile publishable key. Custom schemes
+are registered separately. WebGL uses the web key's **Allowed Origins**.
 
 `InAppPreferred` is the privacy-preferred default. `InAppPersistent` allows the
 system in-app browser to reuse browser-managed vendor state when the OS permits,

@@ -28,6 +28,7 @@ namespace M2C.Checkout
         private readonly Func<string, Task<ShopSessionStatus>> _readShopSessionStatus;
         private readonly Func<IShopSessionBrowser> _createShopSessionBrowser;
         private readonly Func<double> _monotonicSeconds;
+        private readonly Func<string, StatusSource, double, Task<ClientStatus>> _readStatus;
         private static bool _inFlight;
         private static readonly FallbackAttempt DisabledFallbackAttempt =
             new FallbackAttempt(null, null, default(AuctionRequest), null);
@@ -101,7 +102,8 @@ namespace M2C.Checkout
             Func<ShopSessionRequest, Task<ShopSessionResult>> createShopSession = null,
             Func<string, Task<ShopSessionStatus>> readShopSessionStatus = null,
             Func<IShopSessionBrowser> createShopSessionBrowser = null,
-            Func<double> monotonicSeconds = null)
+            Func<double> monotonicSeconds = null,
+            Func<string, StatusSource, double, Task<ClientStatus>> readStatus = null)
         {
             _config = config ?? throw new ArgumentNullException(nameof(config));
             if (!string.IsNullOrEmpty(_config.PublishableKey) &&
@@ -120,6 +122,7 @@ namespace M2C.Checkout
             _createShopSessionBrowser = createShopSessionBrowser ?? (() => ShopSessionBrowserFactory.Create(_config));
             _monotonicSeconds = monotonicSeconds ?? (() =>
                 (double)System.Diagnostics.Stopwatch.GetTimestamp() / System.Diagnostics.Stopwatch.Frequency);
+            _readStatus = readStatus;
         }
 
         /// <summary>Create a client from the project settings asset, or default config when the asset is absent.</summary>
@@ -391,7 +394,11 @@ namespace M2C.Checkout
             if (string.IsNullOrEmpty(requestId))
                 throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "request id is required");
             ValidateStatusSource();
-            return ResolveStatusWithinBudgetAsync(requestId, null, M2CApi.DefaultHttpTimeoutSeconds);
+            double started = _monotonicSeconds();
+            return ResolveStatusWithBackstopAsync(
+                requestId, null, started + M2CApi.DefaultHttpTimeoutSeconds,
+                started + _config.M2CFallbackAfterSeconds,
+                budget => ResolveStatusWithinBudgetAsync(requestId, null, budget));
         }
 
         private async Task<CheckoutResult> RunAsync(
@@ -606,32 +613,34 @@ namespace M2C.Checkout
         {
             SetState(CheckoutState.Polling);
             var sched = _config.Poll ?? PollSchedule.Default;
-            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            double started = _monotonicSeconds();
+            double deadline = started + sched.TotalWindowSeconds;
             int attempt = 0;
-            bool useFallback = ShouldUseM2CFallback(statusSource);
 
-            while (stopwatch.Elapsed.TotalSeconds < sched.TotalWindowSeconds)
+            while (_monotonicSeconds() < deadline)
             {
                 double delay = sched.DelayForAttempt(attempt++);
                 if (delay > 0)
                 {
-                    double remainingBeforeDelay = sched.TotalWindowSeconds - stopwatch.Elapsed.TotalSeconds;
+                    double remainingBeforeDelay = deadline - _monotonicSeconds();
                     if (remainingBeforeDelay <= 0) break;
                     await _delay(Math.Min(delay, remainingBeforeDelay), CancellationToken.None);
                     if (delay >= remainingBeforeDelay) break;
                 }
 
-                double remaining = sched.TotalWindowSeconds - stopwatch.Elapsed.TotalSeconds;
+                double remaining = deadline - _monotonicSeconds();
                 if (remaining <= 0) break;
 
-                // Default to Processing so a retryable/transient primary failure falls
-                // through to the fallback check below instead of looping straight to the
-                // next attempt: a status URL that is 503ing or timing out must still let
-                // the M2C fallback answer once past the threshold.
                 ClientStatus status = ClientStatus.Processing;
                 try
                 {
-                    status = await ResolveStatusWithinBudgetAsync(requestId, statusSource, remaining);
+                    status = await ResolveStatusWithBackstopAsync(
+                        requestId, statusSource, deadline, started + _config.M2CFallbackAfterSeconds,
+                        budget => ResolveStatusWithinBudgetAsync(requestId, statusSource, budget));
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
                 }
                 catch (M2CCheckoutException e)
                 {
@@ -642,14 +651,10 @@ namespace M2C.Checkout
                         throw;
                     }
 
-                    // Retryable: leave status as Processing and fall through - the switch
-                    // takes its default path and the fallback (if past threshold) runs.
                     Debug.LogWarning("[M2C] status read failed, will retry: " + e.Message);
                 }
                 catch (Exception e)
                 {
-                    // A transient status-read failure must not fail the checkout; treat it
-                    // as Processing and fall through to the fallback / next attempt.
                     Debug.LogWarning("[M2C] status read failed, will retry: " + e.Message);
                 }
 
@@ -668,23 +673,6 @@ namespace M2C.Checkout
                         break; // processing - keep polling
                 }
 
-                // Opt-in M2C-status fallback: once the merchant's own source has stayed
-                // non-terminal past the threshold, also consult M2C once per cycle. All
-                // fallback failures are swallowed; the signed webhook stays the truth.
-                if (useFallback && stopwatch.Elapsed.TotalSeconds >= _config.M2CFallbackAfterSeconds)
-                {
-                    double fallbackRemaining = sched.TotalWindowSeconds - stopwatch.Elapsed.TotalSeconds;
-                    if (fallbackRemaining > 0)
-                    {
-                        ClientStatus fallbackStatus = await ReadM2CFallbackAsync(requestId, fallbackRemaining);
-                        CheckoutResult fallbackResult = ResultFromStatusRead(requestId, fallbackStatus);
-                        if (fallbackResult.Outcome != CheckoutOutcome.PendingTimeout)
-                        {
-                            ResumeStore.Clear();
-                            return Terminal(fallbackResult, StateForResult(fallbackResult));
-                        }
-                    }
-                }
             }
 
             // Browser tabs can suspend the Unity loop while checkout is open. Take a
@@ -701,27 +689,37 @@ namespace M2C.Checkout
             SetState(CheckoutState.Polling);
             var sched = _config.Poll ?? PollSchedule.Default;
             double windowSeconds = Math.Min(maxWindowSeconds, sched.TotalWindowSeconds);
-            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            double started = _monotonicSeconds();
+            double deadline = started + windowSeconds;
+            bool useFallback = ShouldUseM2CFallback(null);
+            // A stalled merchant read must leave time for one final backstop probe.
+            double primaryDeadline = useFallback ? deadline - windowSeconds / 2 : deadline;
             int attempt = 0;
 
-            while (stopwatch.Elapsed.TotalSeconds < windowSeconds)
+            while (_monotonicSeconds() < primaryDeadline)
             {
                 double delay = ReturnlessStatusDelayForAttempt(attempt++);
                 if (delay > 0)
                 {
-                    double remainingBeforeDelay = windowSeconds - stopwatch.Elapsed.TotalSeconds;
+                    double remainingBeforeDelay = primaryDeadline - _monotonicSeconds();
                     if (remainingBeforeDelay <= 0) break;
                     await _delay(Math.Min(delay, remainingBeforeDelay), CancellationToken.None);
                     if (delay >= remainingBeforeDelay) break;
                 }
 
-                double remaining = windowSeconds - stopwatch.Elapsed.TotalSeconds;
+                double remaining = primaryDeadline - _monotonicSeconds();
                 if (remaining <= 0) break;
 
                 ClientStatus status;
                 try
                 {
-                    status = await ResolveStatusWithinBudgetAsync(requestId, null, remaining);
+                    status = await ResolveStatusWithBackstopAsync(
+                        requestId, null, primaryDeadline, double.PositiveInfinity,
+                        budget => ResolveStatusWithinBudgetAsync(requestId, null, budget));
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
                 }
                 catch (M2CCheckoutException e)
                 {
@@ -749,6 +747,16 @@ namespace M2C.Checkout
                 }
             }
 
+            if (useFallback)
+            {
+                ClientStatus fallback = await ReadM2CFallbackAsync(requestId, deadline - _monotonicSeconds());
+                CheckoutResult result = ResultFromStatusRead(requestId, fallback);
+                if (result.Outcome != CheckoutOutcome.PendingTimeout)
+                {
+                    ResumeStore.Clear();
+                    return Terminal(result, StateForResult(result));
+                }
+            }
             ResumeStore.Clear();
             return Terminal(new CheckoutPendingTimeout(requestId), CheckoutState.PendingTimeout);
         }
@@ -771,7 +779,14 @@ namespace M2C.Checkout
             ClientStatus status;
             try
             {
-                status = await ResolveStatusWithinBudgetAsync(requestId, statusSource, M2CApi.DefaultHttpTimeoutSeconds);
+                double started = _monotonicSeconds();
+                status = await ResolveStatusWithBackstopAsync(
+                    requestId, statusSource, started + M2CApi.DefaultHttpTimeoutSeconds, started,
+                    budget => ResolveStatusWithinBudgetAsync(requestId, statusSource, budget));
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
             }
             catch (M2CCheckoutException e) when (!IsRetryableStatusRead(e))
             {
@@ -789,8 +804,6 @@ namespace M2C.Checkout
                 Debug.LogWarning("[M2C] status read failed, treating as " + (cancelWhenProcessing ? "canceled" : "pending") + ": " + e.Message);
                 status = ClientStatus.Processing;
             }
-            if (status == ClientStatus.Processing && ShouldUseM2CFallback(statusSource))
-                status = await ReadM2CFallbackAsync(requestId, M2CApi.DefaultHttpTimeoutSeconds);
             ResumeStore.Clear();
             CheckoutResult result = cancelWhenProcessing
                 ? ResultFromBrowserCancelStatusRead(requestId, status)
@@ -841,17 +854,61 @@ namespace M2C.Checkout
         private Task<ClientStatus> ResolveStatusAsync(string requestId, StatusSource statusSource = null, double timeoutBudgetSeconds = 0)
         {
             var src = statusSource ?? _config.StatusSource ?? StatusSource.M2C;
+            if (_readStatus != null) return _readStatus(requestId, src, timeoutBudgetSeconds);
             switch (src.Kind)
             {
                 case StatusSourceKind.Url:
                     return M2CApi.ReadStatusUrlAsync(src.UrlTemplate, requestId, timeoutBudgetSeconds);
                 case StatusSourceKind.Callback:
-                    return CallbackLimiter.InvokeAsync(
-                        () => src.CheckStatus(requestId),
-                        timeoutBudgetSeconds > 0 ? timeoutBudgetSeconds : M2CApi.DefaultHttpTimeoutSeconds);
+                    return ReadStatusCallbackAsync(requestId, src, timeoutBudgetSeconds);
                 default:
                     return _api.ReadStatusM2CAsync(requestId, timeoutBudgetSeconds);
             }
+        }
+
+        private async Task<ClientStatus> ReadStatusCallbackAsync(string requestId, StatusSource source, double budget)
+        {
+            try
+            {
+                return await CallbackLimiter.InvokeAsync(() => source.CheckStatus(requestId), budget);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (M2CCheckoutException) { throw; }
+            catch (Exception)
+            {
+                throw new M2CCheckoutException(M2CErrorCode.ServiceUnavailable, "status callback failed");
+            }
+        }
+
+        private async Task<ClientStatus> ResolveStatusWithBackstopAsync(
+            string requestId, StatusSource source, double deadline, double backstopEligibleAt,
+            Func<double, Task<ClientStatus>> primaryRead)
+        {
+            double remaining = deadline - _monotonicSeconds();
+            if (remaining <= 0) return ClientStatus.Processing;
+            bool useFallback = ShouldUseM2CFallback(source);
+            double untilThreshold = backstopEligibleAt - _monotonicSeconds();
+            double primaryBudget = useFallback
+                ? (untilThreshold <= 0 ? remaining / 2 : Math.Min(remaining, untilThreshold))
+                : remaining;
+            M2CCheckoutException primaryError = null;
+            try
+            {
+                ClientStatus primary = await primaryRead(primaryBudget);
+                if (primary != ClientStatus.Processing) return primary;
+            }
+            catch (M2CCheckoutException error) when (IsRetryableStatusRead(error))
+            {
+                primaryError = error;
+            }
+            if (useFallback && _monotonicSeconds() >= backstopEligibleAt)
+            {
+                ClientStatus fallback = await ReadM2CFallbackAsync(requestId, deadline - _monotonicSeconds());
+                if (fallback != ClientStatus.Processing) return fallback;
+            }
+            if (primaryError != null)
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(primaryError).Throw();
+            return ClientStatus.Processing;
         }
 
         private async Task<ClientStatus> ResolveStatusWithinBudgetAsync(string requestId, StatusSource statusSource, double timeoutBudgetSeconds)
@@ -860,12 +917,20 @@ namespace M2C.Checkout
                 timeoutBudgetSeconds = M2CApi.DefaultHttpTimeoutSeconds;
 
             Task<ClientStatus> statusTask = ResolveStatusAsync(requestId, statusSource, timeoutBudgetSeconds);
-            Task timeoutTask = M2CScheduler.Instance.Delay(timeoutBudgetSeconds);
-            if (await Task.WhenAny(statusTask, timeoutTask) == statusTask)
-                return await statusTask;
+            if (statusTask.IsCompleted) return await statusTask;
+            using (var timeoutCancellation = new CancellationTokenSource())
+            {
+                Task timeoutTask = _delay(timeoutBudgetSeconds, timeoutCancellation.Token);
+                if (await Task.WhenAny(statusTask, timeoutTask) == statusTask)
+                {
+                    timeoutCancellation.Cancel();
+                    return await statusTask;
+                }
 
-            ObserveFault(statusTask);
-            throw new M2CCheckoutException(M2CErrorCode.Network, "status read timed out");
+                ObserveFault(statusTask);
+                await timeoutTask;
+                throw new M2CCheckoutException(M2CErrorCode.Network, "status read timed out");
+            }
         }
 
         // The M2C-status fallback backs a merchant's own (Url/Callback) source: it is
@@ -883,10 +948,12 @@ namespace M2C.Checkout
 
         private async Task<ClientStatus> ReadM2CFallbackAsync(string requestId, double timeoutBudgetSeconds)
         {
+            if (timeoutBudgetSeconds <= 0) return ClientStatus.Processing;
             try
             {
                 return await ResolveStatusWithinBudgetAsync(requestId, StatusSource.M2C, timeoutBudgetSeconds);
             }
+            catch (OperationCanceledException) { throw; }
             catch (Exception e)
             {
                 // A fallback read must never fail a checkout the primary could still

@@ -1,5 +1,11 @@
 # M2C Checkout for Unity (`com.m2c.checkout`)
 
+For mobile HTTP(S) checkout or shop-session returns, register each exact origin
+under **Mobile return origins** on the publishable key in Credentials. Live keys
+require HTTPS; test keys also allow explicitly registered loopback HTTP origins.
+Empty registration blocks HTTP(S) returns. Paths and queries belong in the return
+URL, not the origin registration. Custom schemes remain separately registered.
+
 Shop sessions create and launch one vendor storefront without waiting for it to
 close. They also offer a one-shot advisory status read. Purchases remain
 authoritative through your signed merchant webhook.
@@ -46,13 +52,13 @@ This folder is the Unity package root for the `m2c-checkout-unity` repository:
 Via UPM (Package Manager > Add package from git URL):
 
 ```
-https://github.com/m2cmarkets/m2c-checkout-unity.git#v0.10.0
+https://github.com/m2cmarkets/m2c-checkout-unity.git#v0.11.0
 ```
 
 or add to `Packages/manifest.json`:
 
 ```json
-"com.m2c.checkout": "https://github.com/m2cmarkets/m2c-checkout-unity.git#v0.10.0"
+"com.m2c.checkout": "https://github.com/m2cmarkets/m2c-checkout-unity.git#v0.11.0"
 ```
 
 Pin a released tag for reproducible builds. Use an untagged default-branch URL
@@ -416,6 +422,19 @@ Call `await client.TryResumeAsync()` once on startup; if a checkout's process wa
 killed mid-flight, it resumes the status poll from the persisted request id and
 status-source reference. Callback status sources must be recreated in `M2CConfig`
 before resuming because functions cannot be serialized.
+
+Saved URL recovery keeps its original URL template as the primary. Resolved
+primary results take precedence over the opt-in M2C status fallback. Retryable
+primary errors can reach that fallback; actionable errors and canceled reads
+propagate. Short ambiguous-return polls reserve time for one final fallback read
+within their existing timeout, even before `M2CFallbackAfterSeconds`.
+
+`Canceled` and `PendingTimeout` describe the client flow, not proof that payment
+did not happen. These outcomes clear SDK recovery state and permit another
+explicit checkout. Keep the original request ID on your backend and reconcile
+that payment before retrying the same logical order. Deduplicate fulfillment by
+order as well as webhook event, and distinguish a new intended purchase from a
+retry of an uncertain one. Status recovery never invokes native payment fallback.
 
 ## Targets
 

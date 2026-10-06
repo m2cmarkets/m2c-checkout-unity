@@ -539,7 +539,7 @@ namespace M2C.Checkout.Editor
         private static string PackageVersion()
         {
             var info = UnityEditor.PackageManager.PackageInfo.FindForAssembly(typeof(M2CCheckoutSettings).Assembly);
-            return info != null && !string.IsNullOrEmpty(info.version) ? info.version : "0.10.0";
+            return info != null && !string.IsNullOrEmpty(info.version) ? info.version : "0.11.0";
         }
     }
 }

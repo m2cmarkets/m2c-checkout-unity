@@ -112,10 +112,10 @@ public sealed class CheckoutSample : MonoBehaviour
                 Debug.Log("[M2C] payment failed");
                 break;
             case CheckoutOutcome.Canceled:
-                Debug.Log("[M2C] canceled");
+                Debug.Log("[M2C] checkout UI canceled; reconcile request " + result.RequestId + " on your backend before retrying this order");
                 break;
             case CheckoutOutcome.PendingTimeout:
-                Debug.Log("[M2C] still processing - we'll confirm shortly");
+                Debug.Log("[M2C] payment unresolved; reconcile request " + result.RequestId + " on your backend before retrying this order");
                 break;
             case CheckoutOutcome.FallbackStarted:
                 Debug.Log("[M2C] native billing took responsibility - its own result decides fulfillment");

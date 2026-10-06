@@ -148,8 +148,9 @@ namespace M2C.Checkout.Tests
                     vector.cancel_url,
                     vector.expected_request_id);
                 Assert.AreEqual(vector.verdict, actual.Verdict.ToString().ToLowerInvariant(), vector.name);
-                Assert.AreEqual(vector.request_id, actual.RequestId, vector.name);
-                Assert.AreEqual(vector.error, actual.Error, vector.name);
+                // JsonUtility materializes nullable string fields as empty strings.
+                Assert.AreEqual(string.IsNullOrEmpty(vector.request_id) ? null : vector.request_id, actual.RequestId, vector.name);
+                Assert.AreEqual(string.IsNullOrEmpty(vector.error) ? null : vector.error, actual.Error, vector.name);
             }
         }
 
@@ -406,12 +407,13 @@ namespace M2C.Checkout.Tests
                 }
 
                 int fifthCalls = 0;
-                var error = Assert.ThrowsAsync<M2CCheckoutException>(async () =>
-                    await CallbackLimiter.InvokeAsync(() =>
+                // NUnit blocks the Unity thread here; the capacity wait must not capture it.
+                var error = Assert.ThrowsAsync<M2CCheckoutException>(() =>
+                    Task.Run(() => CallbackLimiter.InvokeAsync(() =>
                     {
                         fifthCalls++;
                         return Task.FromResult(ClientStatus.Completed);
-                    }, 0.01));
+                    }, 0.01)));
                 Assert.AreEqual(M2CErrorCode.Network, error.Code);
                 Assert.AreEqual(0, fifthCalls);
             }

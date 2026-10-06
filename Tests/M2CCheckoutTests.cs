@@ -16,7 +16,7 @@ namespace M2C.Checkout.Tests
         {
             var result = ReturnClassifier.Classify(
                 "mygame://checkout/return?request_id=abc",
-                "mygame://checkout/return", "mygame://checkout/cancel", "fallback");
+                "mygame://checkout/return", "mygame://checkout/cancel", "abc");
             Assert.AreEqual(ReturnVerdict.Success, result.Verdict);
             Assert.AreEqual("abc", result.RequestId);
         }
@@ -54,7 +54,7 @@ namespace M2C.Checkout.Tests
         {
             var result = ReturnClassifier.Classify(
                 "mygame://checkout/return/vendor?request_id=abc",
-                "mygame://checkout/return", "mygame://checkout/cancel", "fb");
+                "mygame://checkout/return", "mygame://checkout/cancel", "abc");
             Assert.AreEqual(ReturnVerdict.Success, result.Verdict);
             Assert.AreEqual("abc", result.RequestId);
         }
