@@ -94,9 +94,8 @@ namespace M2C.Checkout
         public string RequestId { get; internal set; }
         public string FallbackProductId { get; internal set; }
         public long LatencyMs { get; internal set; }
-        public double TransactionValue { get; internal set; }
-        public string Currency { get; internal set; }
-        public string Description { get; internal set; }
+        public string ProductId { get; internal set; }
+        public int Quantity { get; internal set; }
         public string Reference { get; internal set; }
     }
 
@@ -199,16 +198,16 @@ namespace M2C.Checkout
     }
 
     /// <summary>
-    /// Parameters for a client-initiated auction (publishable-key mode). Money is
-    /// in major currency units (e.g. 4.99). The SDK does not send customer_ip or
+    /// Parameters for a catalog checkout using your publisher product ID.
+    /// Currency selects a configured price. The SDK does not send customer_ip or
     /// country: the server derives geo from the observed connection IP.
     /// </summary>
     [Serializable]
     public struct AuctionRequest
     {
-        public double TransactionValue;
-        public string Currency;       // ISO 4217; defaults to USD server-side when null/empty
-        public string Description;
+        public string ProductId;
+        public string Currency;       // required when the product has multiple currencies
+        public int? Quantity;          // null defaults to one; the catalog bounds the maximum
         public string SuccessUrl;     // mobile custom scheme/app link, or http(s) return page on WebGL
         public string CancelUrl;
         public string Reference;      // opaque order id (1-128 of A-Z a-z 0-9 . _ : -); echoed back in the webhook

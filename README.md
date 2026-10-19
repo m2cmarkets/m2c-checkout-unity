@@ -52,13 +52,13 @@ This folder is the Unity package root for the `m2c-checkout-unity` repository:
 Via UPM (Package Manager > Add package from git URL):
 
 ```
-https://github.com/m2cmarkets/m2c-checkout-unity.git#v0.11.0
+https://github.com/m2cmarkets/m2c-checkout-unity.git#v0.12.0
 ```
 
 or add to `Packages/manifest.json`:
 
 ```json
-"com.m2c.checkout": "https://github.com/m2cmarkets/m2c-checkout-unity.git#v0.11.0"
+"com.m2c.checkout": "https://github.com/m2cmarkets/m2c-checkout-unity.git#v0.12.0"
 ```
 
 Pin a released tag for reproducible builds. Use an untagged default-branch URL
@@ -132,7 +132,7 @@ The SDK runs the auction itself with a publishable key.
 
 ```csharp
 CheckoutResult result = await client.StartAsync(new AuctionRequest {
-    TransactionValue = 4.99, Currency = "USD", Description = "100 Gems",
+    ProductId = "gems_100", Quantity = 1,
     // SuccessUrl / CancelUrl default from the project settings asset.
 });
 ```
@@ -494,3 +494,5 @@ External checkout rules vary by product category, region, store program, and
 checkout surface. The SDK does not determine that a use is permitted. Confirm
 the applicable Apple, Google, console, and storefront requirements before
 enabling external checkout or native billing fallback.
+
+Client-initiated checkout uses your product ID, such as `gems_100`, registered in Dashboard > Products for the key's account. Products, prices, and availability are shared across live and test; credentials, routing, and transactions remain separate. Product IDs are case-sensitive: 1-128 ASCII letters, digits, `.`, `_`, `:` or `-`, starting with a letter or digit. Pass optional currency (`currency` in web, iOS and Android; `Currency` in Unity) to select a configured price; it is required when the product has multiple active currencies and must be an uppercase supported ISO 4217 code. Quantity defaults to one and cannot exceed the configured maximum. M2C resolves the amount and description. Price edits keep your product ID stable and apply to new checkouts in both modes. Generated database and price IDs stay internal. Secret-key backend checkout supports either the same product IDs or raw server-calculated pricing; do not combine product IDs with raw amounts or descriptions. Fulfill from the signed webhook's `catalog_purchase` snapshot; a client reference is not buyer authentication.

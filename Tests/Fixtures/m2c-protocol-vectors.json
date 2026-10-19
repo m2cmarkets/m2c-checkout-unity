@@ -17,6 +17,13 @@
       "signature": "sha256=1598869af7848e521651a7ed08c42f666f21407afa7049ccb1538d0a43782a44"
     },
     {
+      "name": "catalog_conversion_webhook",
+      "secret": "test-webhook-secret",
+      "timestamp": "1700000000",
+      "body": "{\"catalog_purchase\":{\"product_id\":\"gems_100\",\"product_name\":\"Upgrade\",\"quantity\":2,\"currency\":\"USD\",\"unit_amount_microcents\":10000000,\"total_amount_microcents\":20000000},\"event\":\"conversion\",\"request_id\":\"11111111-1111-1111-1111-111111111111\",\"status\":\"completed\",\"timestamp\":\"2023-11-14T22:13:20Z\",\"transaction_id\":\"\",\"vendor\":\"550e8400-e29b-41d4-a716-446655440000\"}",
+      "signature": "sha256=1f87ddf2dfc78438bf962a4e95a13a00a07c47b6ee8c8cc17b05cccd5c575620"
+    },
+    {
       "name": "empty_body",
       "secret": "test-webhook-secret",
       "timestamp": "1700000000",

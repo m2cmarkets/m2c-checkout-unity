@@ -173,60 +173,52 @@ namespace M2C.Checkout.Tests
         {
             string body = M2CApi.BuildAuctionBody(new AuctionRequest
             {
-                TransactionValue = 4.99,
-                Currency = "USD",
+                ProductId = "gems_100",
                 SuccessUrl = "mygame://checkout/return"
             });
-            StringAssert.Contains("\"transaction_value\":4.99", body);
-            StringAssert.Contains("\"currency\":\"USD\"", body);
+            StringAssert.Contains("\"product_id\":\"gems_100\"", body);
+            StringAssert.DoesNotContain("price_id", body);
+            StringAssert.Contains("\"quantity\":1", body);
             StringAssert.Contains("\"success_url\":\"mygame://checkout/return\"", body);
             StringAssert.DoesNotContain("description", body);
             StringAssert.DoesNotContain("cancel_url", body);
         }
 
         [Test]
-        public void Formats_number_invariantly_without_scientific_notation()
+        public void Rejects_invalid_catalog_quantity()
         {
-            string body = M2CApi.BuildAuctionBody(new AuctionRequest { TransactionValue = 1000.5 });
-            StringAssert.Contains("\"transaction_value\":1000.5", body);
-        }
-
-        [Test]
-        public void Accepts_minimum_transaction_value()
-        {
-            string body = M2CApi.BuildAuctionBody(new AuctionRequest { TransactionValue = 0.000001 });
-            StringAssert.Contains("\"transaction_value\":0.000001", body);
-        }
-
-        [Test]
-        public void Rejects_invalid_transaction_values()
-        {
-            AssertInvalidTransactionValue(double.NaN);
-            AssertInvalidTransactionValue(double.PositiveInfinity);
-            AssertInvalidTransactionValue(double.NegativeInfinity);
-            AssertInvalidTransactionValue(0);
-            AssertInvalidTransactionValue(-1);
-            AssertInvalidTransactionValue(0.0000004);
-            AssertInvalidTransactionValue(5000000000.01);
+            foreach (var quantity in new[] { 0, -1, 1001 })
+                AssertInvalidQuantity(quantity);
         }
 
         [Test]
         public void Escapes_string_values()
         {
-            string body = M2CApi.BuildAuctionBody(new AuctionRequest { TransactionValue = 1, Description = "a\"b" });
+            string body = M2CApi.BuildAuctionBody(new AuctionRequest { ProductId = "gems_100", Reference = "a\"b" });
             StringAssert.Contains("a\\\"b", body);
         }
 
         [Test]
         public void Writes_segments_array()
         {
-            string body = M2CApi.BuildAuctionBody(new AuctionRequest { TransactionValue = 1, Segments = new[] { "high_value", "returning_customer" } });
+            string body = M2CApi.BuildAuctionBody(new AuctionRequest { ProductId = "gems_100", Segments = new[] { "high_value", "returning_customer" } });
             StringAssert.Contains("\"segments\":[\"high_value\",\"returning_customer\"]", body);
         }
 
-        private static void AssertInvalidTransactionValue(double value)
+        [Test]
+        public void Publisher_ids_and_currency_are_validated()
         {
-            var e = Assert.Throws<M2CCheckoutException>(() => M2CApi.BuildAuctionBody(new AuctionRequest { TransactionValue = value }));
+            string body = M2CApi.BuildAuctionBody(new AuctionRequest { ProductId = "com.game:gems-100", Currency = "EUR" });
+            StringAssert.Contains("\"currency\":\"EUR\"", body);
+            foreach (var id in new[] { "", "a/b", "has space", "_first", "é", new string('x', 129), "gems\n" })
+                Assert.Throws<M2CCheckoutException>(() => M2CApi.BuildAuctionBody(new AuctionRequest { ProductId = id }));
+            foreach (var currency in new[] { "", "usd", "USD\n" })
+                Assert.Throws<M2CCheckoutException>(() => M2CApi.BuildAuctionBody(new AuctionRequest { ProductId = "gems_100", Currency = currency }));
+        }
+
+        private static void AssertInvalidQuantity(int value)
+        {
+            var e = Assert.Throws<M2CCheckoutException>(() => M2CApi.BuildAuctionBody(new AuctionRequest { ProductId = "gems_100", Quantity = value }));
             Assert.AreEqual(M2CErrorCode.InvalidRequest, e.Code);
         }
     }
@@ -675,9 +667,7 @@ namespace M2C.Checkout.Tests
     {
         private static readonly AuctionRequest Request = new AuctionRequest
         {
-            TransactionValue = 4.99,
-            Currency = "USD",
-            Description = "coins",
+            ProductId = "gems_100",
             Reference = "order-123",
             SuccessUrl = "mygame://checkout/return",
             CancelUrl = "mygame://checkout/cancel"
@@ -714,7 +704,7 @@ namespace M2C.Checkout.Tests
             Assert.AreEqual(1, calls);
             Assert.AreSame(original, seen.OriginalError);
             Assert.AreEqual("coins_5", seen.FallbackProductId);
-            Assert.AreEqual(Request.TransactionValue, seen.TransactionValue);
+            Assert.AreEqual(Request.ProductId, seen.ProductId);
             Assert.AreEqual(Request.Reference, seen.Reference);
             CollectionAssert.DoesNotContain(states, CheckoutState.Error);
             Assert.AreEqual(CheckoutState.FallbackStarted, client.State);

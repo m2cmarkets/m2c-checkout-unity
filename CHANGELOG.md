@@ -2,6 +2,16 @@
 
 All notable changes to `com.m2c.checkout` are documented here.
 
+## [0.12.0] - 2026-10-18
+
+- **Breaking:** `AuctionRequest` requires `ProductId`; `TransactionValue`
+  and `Description` are removed. Register products in Dashboard > Products.
+  Quantity defaults to one; currency selects a configured product price.
+- **Breaking:** `FallbackContext` replaces `TransactionValue`, `Currency`,
+  and `Description` with `ProductId` and `Quantity`. Update fallback handlers
+  to map product IDs to native billing products.
+- Live and test share the catalog. Fulfill from verified merchant webhooks.
+
 ## [0.11.0] - 2026-10-05
 
 - Short ambiguous-return polls reserve one bounded opt-in M2C status backstop

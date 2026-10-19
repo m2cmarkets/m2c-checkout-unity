@@ -1056,9 +1056,8 @@ namespace M2C.Checkout
                 RequestId = attempt.RequestId,
                 FallbackProductId = attempt.FallbackProductId,
                 LatencyMs = attempt.ElapsedMilliseconds,
-                TransactionValue = attempt.Request.TransactionValue,
-                Currency = attempt.Request.Currency,
-                Description = attempt.Request.Description,
+                ProductId = attempt.Request.ProductId,
+                Quantity = attempt.Request.Quantity ?? 1,
                 Reference = attempt.Request.Reference
             };
 

@@ -67,9 +67,7 @@ public sealed class CheckoutSample : MonoBehaviour
         {
             CheckoutResult result = await _client.StartAsync(new AuctionRequest
             {
-                TransactionValue = 4.99,
-                Currency = "USD",
-                Description = "100 Gems",
+                ProductId = "gems_100",
             });
             HandleResult(result);
         }

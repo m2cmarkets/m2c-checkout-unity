@@ -96,8 +96,6 @@ namespace M2C.Checkout.Internal
     /// </summary>
     internal sealed class M2CApi
     {
-        private const double MinTransactionValue = 0.000001;
-        private const double MaxTransactionValue = 5000000000.0;
         private const string OfficialBaseUrl = "https://api.m2cmarkets.com";
         internal const int DefaultHttpTimeoutSeconds = 30;
 
@@ -257,12 +255,16 @@ namespace M2C.Checkout.Internal
 
         internal static string BuildAuctionBody(AuctionRequest req)
         {
-            ValidateTransactionValue(req.TransactionValue);
+            var quantity = req.Quantity ?? 1;
+            if ((req.ProductId == null || !Regex.IsMatch(req.ProductId, @"\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\z")) || quantity < 1 || quantity > 1000)
+                throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "ProductId must be a valid publisher product ID and Quantity must be from 1 to 1000");
 
+            if (req.Currency != null && !Regex.IsMatch(req.Currency, @"\A[A-Z]{3}\z"))
+                throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "Currency must be an uppercase three-letter currency code");
             return new JsonWriter()
-                .Number("transaction_value", req.TransactionValue)
+                .String("product_id", req.ProductId)
                 .String("currency", req.Currency)
-                .String("description", req.Description)
+                .Number("quantity", quantity)
                 .String("success_url", req.SuccessUrl)
                 .String("cancel_url", req.CancelUrl)
                 .String("reference", req.Reference)
@@ -389,18 +391,6 @@ namespace M2C.Checkout.Internal
 #else
             return "";
 #endif
-        }
-
-        private static void ValidateTransactionValue(double value)
-        {
-            if (double.IsNaN(value) || double.IsInfinity(value))
-                throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "transaction value must be a finite number");
-            if (value <= 0)
-                throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "transaction value must be greater than 0");
-            if (value < MinTransactionValue)
-                throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "transaction value must be at least 0.000001");
-            if (value > MaxTransactionValue)
-                throw new M2CCheckoutException(M2CErrorCode.InvalidRequest, "transaction value exceeds the maximum");
         }
 
         internal static M2CCheckoutException MapError(HttpResponse res)

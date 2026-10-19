@@ -609,7 +609,7 @@ namespace M2C.Checkout.Tests
                 createBrowser: _ => browser);
 
             var error = Assert.ThrowsAsync<M2CCheckoutException>(async () =>
-                await client.StartAsync(new AuctionRequest { TransactionValue = 1 }));
+                await client.StartAsync(new AuctionRequest { ProductId = "gems_100" }));
 
             Assert.AreEqual(M2CErrorCode.Unknown, error.Code);
             Assert.AreEqual(0, browser.LaunchCalls);
